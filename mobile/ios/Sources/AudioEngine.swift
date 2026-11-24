@@ -6,6 +6,7 @@ import UIKit
 private final class AudioTapState {
     var gain: Float = 1.0
     var meteringActive: Bool = false
+    var isFloat32: Bool = true
     var bassLevel: Float = 0.0
     var lpState: Float = 0.0
     var sampleRate: Float = 44100.0
@@ -22,10 +23,12 @@ private let tapFinalizeCallback: MTAudioProcessingTapFinalizeCallback = { tap in
 
 private let tapPrepareCallback: MTAudioProcessingTapPrepareCallback = { tap, _, processingFormat in
     let state = Unmanaged<AudioTapState>.fromOpaque(MTAudioProcessingTapGetStorage(tap)).takeUnretainedValue()
-    let sr = Float(processingFormat.pointee.mSampleRate)
+    let fmt = processingFormat.pointee
+    let sr = Float(fmt.mSampleRate)
     if sr > 0 {
         state.sampleRate = sr
     }
+    state.isFloat32 = (fmt.mFormatFlags & kAudioFormatFlagIsFloat) != 0 && fmt.mBitsPerChannel == 32
     state.lpState = 0
 }
 
@@ -52,6 +55,7 @@ private let tapProcessCallback: MTAudioProcessingTapProcessCallback = {
     guard frames > 0 else { return }
 
     let state = Unmanaged<AudioTapState>.fromOpaque(MTAudioProcessingTapGetStorage(tap)).takeUnretainedValue()
+    guard state.isFloat32 else { return }
     let gain = state.gain
     let meter = state.meteringActive
     let needGain = abs(gain - 1.0) > 0.001
@@ -112,7 +116,7 @@ private let tapProcessCallback: MTAudioProcessingTapProcessCallback = {
     }
 }
 
-final class AudioEngine {
+final class AudioEngine: NSObject {
     static let shared = AudioEngine()
 
     var onEvent: ((String, [String: Any]) -> Void)?
@@ -135,9 +139,11 @@ final class AudioEngine {
     private var meteringEnabled: Bool = false
     private var foregroundActive: Bool = true
     private var meterTimer: Timer?
+    private var lastEmittedBass: Double = 0.0
     private var loadGeneration: Int = 0
 
-    private init() {
+    private override init() {
+        super.init()
         configureAudioSession()
         configureRemoteCommands()
         observeAudioNotifications()
@@ -297,10 +303,13 @@ final class AudioEngine {
                     }
                 }
             } else {
+                let wasRunning = self.meterTimer != nil
                 self.meterTimer?.invalidate()
                 self.meterTimer = nil
-                self.activeTapState?.bassLevel = 0
-                self.onEvent?("audioLevel", ["bass": 0.0, "live": false])
+                self.lastEmittedBass = 0.0
+                if wasRunning {
+                    self.onEvent?("audioLevel", ["bass": 0.0, "live": false])
+                }
             }
         }
     }
@@ -309,17 +318,18 @@ final class AudioEngine {
         guard meteringEnabled && foregroundActive else { return }
         let playing = player?.timeControlStatus == .playing
         if !playing {
-            if let st = activeTapState {
-                st.bassLevel *= 0.8
-                onEvent?("audioLevel", ["bass": Double(st.bassLevel), "live": tapAttached])
-            } else {
-                onEvent?("audioLevel", ["bass": 0.0, "live": false])
-            }
+            lastEmittedBass *= 0.8
+            if lastEmittedBass < 0.001 { lastEmittedBass = 0.0 }
+            onEvent?("audioLevel", ["bass": lastEmittedBass, "live": tapAttached])
             return
         }
         if tapAttached, let st = activeTapState {
-            onEvent?("audioLevel", ["bass": Double(st.bassLevel), "live": true])
+            let raw = Double(st.bassLevel)
+            let safe = raw.isFinite ? max(0.0, min(1.0, raw)) : 0.0
+            lastEmittedBass = safe
+            onEvent?("audioLevel", ["bass": safe, "live": true])
         } else {
+            lastEmittedBass = 0.0
             onEvent?("audioLevel", ["bass": 0.0, "live": false])
         }
     }

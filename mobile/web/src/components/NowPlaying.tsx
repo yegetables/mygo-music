@@ -424,7 +424,7 @@ export const NowPlaying: React.FC<NowPlayingProps> = ({
             )}
           </div>
 
-          <div style={{ width: 36 }} />
+          <div style={{ width: 36, flexShrink: 0 }} />
         </div>
 
         {isStageMode ? (
@@ -491,8 +491,7 @@ export const NowPlaying: React.FC<NowPlayingProps> = ({
                     <Icon name="prev" size={22} />
                   </button>
                   <button
-                    className="play-btn"
-                    style={{ width: 42, height: 42, background: "#fff", color: "#111" }}
+                    className="play-btn play-btn-sm"
                     onClick={onTogglePlay}
                   >
                     <Icon name={playing ? "pause" : "play"} size={20} />
@@ -534,7 +533,7 @@ export const NowPlaying: React.FC<NowPlayingProps> = ({
               </div>
 
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, ...riseStyle(1) }}>
-                <div style={{ minWidth: 0 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 21, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {track.name}
                   </div>
@@ -542,7 +541,7 @@ export const NowPlaying: React.FC<NowPlayingProps> = ({
                     {(track.artists || []).map((a) => a.name).join(", ")}
                   </div>
                 </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
                   {qualityBadge && <span className="badge">{qualityBadge}</span>}
                   {canLike && (
                     <button
@@ -589,7 +588,6 @@ export const NowPlaying: React.FC<NowPlayingProps> = ({
                 </button>
                 <button
                   className="play-btn"
-                  style={{ width: 60, height: 60, background: "#fff", color: "#111" }}
                   onClick={onTogglePlay}
                 >
                   <Icon name={playing ? "pause" : "play"} size={28} />

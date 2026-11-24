@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { audioRuntime } from "../audioRuntime";
 import type { CoverPalette } from "../types";
 
@@ -17,8 +17,13 @@ void main() {
 `;
 
 // Direct port of internal/app/backdrop.go fogSource (5-octave fbm + domain warp + bass pulse + rising dust specks).
+// Uses highp when supported and a sinless hash so mobile fp16 GPUs (Adreno/Mali) never collapse hash() to 0.
 const FRAG_SRC = `
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
 precision mediump float;
+#endif
 
 uniform vec2 u_res;
 uniform float u_time;
@@ -27,7 +32,15 @@ uniform vec3 u_deep;
 uniform vec3 u_fog;
 
 float hash(vec2 p) {
-  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+#else
+  p3 += dot(p3, p3.yzx + 3.33);
+  p3 = fract(p3);
+  return fract((p3.x + p3.y) * p3.z * 7.13 + p3.x * 3.71);
+#endif
 }
 
 float noise(vec2 p) {
@@ -99,6 +112,8 @@ function compileShader(gl: WebGLRenderingContext, type: number, src: string): We
 
 export const FogBackdrop: React.FC<FogBackdropProps> = ({ enabled, playing, palette, artUrl }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const fallbackRef = useRef<HTMLCanvasElement | null>(null);
+  const [use2DFallback, setUse2DFallback] = useState(false);
   const stateRef = useRef({
     playing,
     targetDeep: [palette.deep.r / 255, palette.deep.g / 255, palette.deep.b / 255],
@@ -107,7 +122,6 @@ export const FogBackdrop: React.FC<FogBackdropProps> = ({ enabled, playing, pale
     curFog: [palette.fog.r / 255, palette.fog.g / 255, palette.fog.b / 255],
     drift: 0,
     speed: playing ? 1 : 0,
-    glFailed: false,
   });
 
   stateRef.current.playing = playing;
@@ -115,31 +129,45 @@ export const FogBackdrop: React.FC<FogBackdropProps> = ({ enabled, playing, pale
   stateRef.current.targetFog = [palette.fog.r / 255, palette.fog.g / 255, palette.fog.b / 255];
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled || use2DFallback) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const gl = canvas.getContext("webgl", { alpha: false, antialias: false, powerPreference: "low-power" });
+    const gl =
+      canvas.getContext("webgl", { alpha: false, antialias: false, powerPreference: "low-power" }) ||
+      (canvas.getContext("experimental-webgl", { alpha: false, antialias: false }) as WebGLRenderingContext | null);
     if (!gl) {
-      stateRef.current.glFailed = true;
+      setUse2DFallback(true);
       return;
     }
 
     const vs = compileShader(gl, gl.VERTEX_SHADER, VERT_SRC);
     const fs = compileShader(gl, gl.FRAGMENT_SHADER, FRAG_SRC);
     if (!vs || !fs) {
-      stateRef.current.glFailed = true;
+      setUse2DFallback(true);
       return;
     }
     const prog = gl.createProgram();
-    if (!prog) return;
+    if (!prog) {
+      setUse2DFallback(true);
+      return;
+    }
     gl.attachShader(prog, vs);
     gl.attachShader(prog, fs);
     gl.linkProgram(prog);
     if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
-      stateRef.current.glFailed = true;
+      gl.deleteProgram(prog);
+      gl.deleteShader(vs);
+      gl.deleteShader(fs);
+      setUse2DFallback(true);
       return;
     }
+
+    const onContextLost = (e: Event) => {
+      e.preventDefault();
+      setUse2DFallback(true);
+    };
+    canvas.addEventListener("webglcontextlost", onContextLost);
 
     const buf = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, buf);
@@ -221,12 +249,108 @@ export const FogBackdrop: React.FC<FogBackdropProps> = ({ enabled, playing, pale
     raf = requestAnimationFrame(renderFrame);
     return () => {
       cancelAnimationFrame(raf);
+      canvas.removeEventListener("webglcontextlost", onContextLost);
       gl.deleteBuffer(buf);
       gl.deleteProgram(prog);
       gl.deleteShader(vs);
       gl.deleteShader(fs);
     };
-  }, [enabled]);
+  }, [enabled, use2DFallback]);
+
+  // Canvas 2D fallback when WebGL is unavailable or lost
+  useEffect(() => {
+    if (!enabled || !use2DFallback) return;
+    const canvas = fallbackRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+    let raf = 0;
+    let lastDraw = 0;
+    let paintedStatic = false;
+    const frameInterval = 1000 / 24;
+
+    const render2D = (now: number) => {
+      raf = requestAnimationFrame(render2D);
+      if (now - lastDraw < frameInterval) return;
+      const dt = lastDraw > 0 ? Math.min((now - lastDraw) / 1000, 0.1) : 1 / 24;
+      lastDraw = now;
+
+      const st = stateRef.current;
+      const colorStep = Math.min(1, dt * 4.5);
+      let colorMoving = false;
+      for (let i = 0; i < 3; i++) {
+        const dd = st.targetDeep[i] - st.curDeep[i];
+        const df = st.targetFog[i] - st.curFog[i];
+        if (Math.abs(dd) > 0.002 || Math.abs(df) > 0.002) {
+          st.curDeep[i] += dd * colorStep;
+          st.curFog[i] += df * colorStep;
+          colorMoving = true;
+        } else {
+          st.curDeep[i] = st.targetDeep[i];
+          st.curFog[i] = st.targetFog[i];
+        }
+      }
+
+      const wantSpeed = st.playing && !reduced ? 1 : 0;
+      st.speed += (wantSpeed - st.speed) * Math.min(1, 2.5 * dt);
+      if (Math.abs(wantSpeed - st.speed) < 0.004) st.speed = wantSpeed;
+      st.drift += st.speed * dt;
+      const bass = reduced ? 0 : audioRuntime.sampleBass(dt);
+
+      const rect = canvas.getBoundingClientRect();
+      const rw = Math.max(64, Math.round(rect.width * 0.35));
+      const rh = Math.max(64, Math.round(rect.height * 0.35));
+      const resized = canvas.width !== rw || canvas.height !== rh;
+      if (resized) {
+        canvas.width = rw;
+        canvas.height = rh;
+      }
+
+      if (paintedStatic && !resized && !colorMoving && st.speed === 0 && bass <= 0.004) {
+        return;
+      }
+      paintedStatic = true;
+
+      const dr = Math.round(st.curDeep[0] * 255);
+      const dg = Math.round(st.curDeep[1] * 255);
+      const db = Math.round(st.curDeep[2] * 255);
+      const fr = Math.round(st.curFog[0] * 255);
+      const fg = Math.round(st.curFog[1] * 255);
+      const fb = Math.round(st.curFog[2] * 255);
+
+      ctx.fillStyle = `rgb(${dr}, ${dg}, ${db})`;
+      ctx.fillRect(0, 0, rw, rh);
+
+      const t = st.drift;
+      const pulse = 0.85 + 0.35 * Math.min(bass, 1);
+      const puffs = 6;
+      for (let i = 0; i < puffs; i++) {
+        const phase = i * 1.37;
+        const cx = rw * (0.2 + 0.6 * (0.5 + 0.5 * Math.sin(t * (0.14 + i * 0.025) + phase)));
+        const cy = rh * (1.15 - (((t * (0.04 + i * 0.008) + i / puffs) % 1.35)));
+        const rad = Math.max(rw, rh) * (0.38 + 0.14 * Math.sin(t * 0.2 + phase)) * (1 + 0.1 * bass);
+        const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, rad);
+        const alpha = Math.min(0.45, 0.26 * pulse);
+        grad.addColorStop(0, `rgba(${fr}, ${fg}, ${fb}, ${alpha})`);
+        grad.addColorStop(0.55, `rgba(${fr}, ${fg}, ${fb}, ${alpha * 0.35})`);
+        grad.addColorStop(1, `rgba(${fr}, ${fg}, ${fb}, 0)`);
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, rw, rh);
+      }
+
+      // Vignette matching shader
+      const vg = ctx.createRadialGradient(rw * 0.5, rh * 0.42, rw * 0.15, rw * 0.5, rh * 0.42, Math.max(rw, rh) * 0.8);
+      vg.addColorStop(0, "rgba(0, 0, 0, 0)");
+      vg.addColorStop(1, "rgba(0, 0, 0, 0.42)");
+      ctx.fillStyle = vg;
+      ctx.fillRect(0, 0, rw, rh);
+    };
+
+    raf = requestAnimationFrame(render2D);
+    return () => cancelAnimationFrame(raf);
+  }, [enabled, use2DFallback]);
 
   if (!enabled) {
     return (
@@ -238,7 +362,11 @@ export const FogBackdrop: React.FC<FogBackdropProps> = ({ enabled, playing, pale
 
   return (
     <div className="np-backdrop-fog">
-      <canvas ref={canvasRef} className="np-fog-canvas" />
+      {use2DFallback ? (
+        <canvas ref={fallbackRef} className="np-fog-canvas" />
+      ) : (
+        <canvas ref={canvasRef} className="np-fog-canvas" />
+      )}
     </div>
   );
 };

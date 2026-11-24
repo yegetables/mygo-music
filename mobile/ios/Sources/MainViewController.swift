@@ -189,9 +189,10 @@ final class MainViewController: UIViewController, WKScriptMessageHandler, WKNavi
     }
 
     private func sendEventToWeb(name: String, payload: [String: Any]) {
-        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+        guard JSONSerialization.isValidJSONObject(payload),
+              let data = try? JSONSerialization.data(withJSONObject: payload),
               let json = String(data: data, encoding: .utf8),
-              let nameData = try? JSONSerialization.data(withJSONObject: name),
+              let nameData = try? JSONEncoder().encode(name),
               let nameJson = String(data: nameData, encoding: .utf8) else { return }
         let js = "window.__mygoNativeEvent && window.__mygoNativeEvent(\(nameJson), \(json));"
         DispatchQueue.main.async { [weak self] in

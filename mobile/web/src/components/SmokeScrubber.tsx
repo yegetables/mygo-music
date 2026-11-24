@@ -122,7 +122,9 @@ export const SmokeScrubber: React.FC<SmokeScrubberProps> = ({
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const padTop = compact ? 30 : 42;
       const padBottom = 14;
-      const cw = Math.ceil(rect.width);
+      const padX = compact ? 24 : 36;
+      const trackW = rect.width;
+      const cw = Math.ceil(trackW + padX * 2);
       const ch = Math.ceil(rect.height + padTop + padBottom);
 
       if (canvas.width !== Math.round(cw * dpr) || canvas.height !== Math.round(ch * dpr)) {
@@ -131,6 +133,7 @@ export const SmokeScrubber: React.FC<SmokeScrubberProps> = ({
         canvas.style.width = `${cw}px`;
         canvas.style.height = `${ch}px`;
         canvas.style.top = `${-padTop}px`;
+        canvas.style.left = `${-padX}px`;
       }
 
       const ctx = canvas.getContext("2d");
@@ -150,7 +153,7 @@ export const SmokeScrubber: React.FC<SmokeScrubberProps> = ({
         ? st.dragVal
         : (st.playing && !st.buffering ? audioRuntime.getSmoothPositionMs() : st.value);
       const p = Math.max(0, Math.min(1, smoothMs / Math.max(st.max, 1)));
-      const headX = p * cw;
+      const headX = padX + p * trackW;
       const trackY = padTop + rect.height / 2;
       const thick = compact ? 4 : 5;
 
@@ -160,14 +163,15 @@ export const SmokeScrubber: React.FC<SmokeScrubberProps> = ({
       const sb = Math.round(st.accent.b * 0.65 + 255 * 0.35);
 
       // 1. Comet gradient trail over the played portion
-      if (headX > 1) {
-        const grad = ctx.createLinearGradient(0, trackY, headX, trackY);
+      const playedW = headX - padX;
+      if (playedW > 1) {
+        const grad = ctx.createLinearGradient(padX, trackY, headX, trackY);
         grad.addColorStop(0, `rgba(${sr}, ${sg}, ${sb}, ${0.28 * smoking})`);
         grad.addColorStop(0.75, `rgba(${sr}, ${sg}, ${sb}, ${0.75 * smoking})`);
         grad.addColorStop(1, `rgba(255, 255, 255, ${0.95 * smoking})`);
         ctx.fillStyle = grad;
         ctx.beginPath();
-        ctx.roundRect(0, trackY - thick / 2, headX, thick, thick / 2);
+        ctx.roundRect(padX, trackY - thick / 2, playedW, thick, thick / 2);
         ctx.fill();
       }
 

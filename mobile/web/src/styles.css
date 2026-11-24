@@ -629,6 +629,30 @@ input, select, textarea {
   justify-content: center;
 }
 
+.play-btn {
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  background: #fff;
+  color: #111;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  transition: transform 140ms ease, opacity 140ms ease;
+}
+
+.play-btn:active {
+  transform: scale(0.94);
+}
+
+.play-btn.play-btn-sm {
+  width: 42px;
+  height: 42px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+}
+
 .scrubber-row {
   display: flex;
   align-items: center;
@@ -736,13 +760,14 @@ input, select, textarea {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   margin-bottom: 14px;
 }
 
 .np-grid {
   flex: 1;
   display: grid;
-  grid-template-columns: minmax(280px, 420px) 1fr;
+  grid-template-columns: minmax(280px, 420px) minmax(0, 1fr);
   gap: 44px;
   align-items: center;
   min-height: 0;
@@ -755,6 +780,8 @@ input, select, textarea {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  min-width: 0;
+  width: 100%;
 }
 
 .np-art {
@@ -792,6 +819,7 @@ input, select, textarea {
 .np-backdrop-fog {
   position: absolute;
   inset: 0;
+  z-index: 0;
   pointer-events: none;
   overflow: hidden;
 }
@@ -803,10 +831,34 @@ input, select, textarea {
 }
 
 .np-pill-group {
+  flex: 1;
+  min-width: 0;
   display: flex;
   gap: 6px;
-  flex-wrap: wrap;
-  justify-content: center;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  justify-content: safe center;
+}
+
+.np-pill-group::-webkit-scrollbar {
+  display: none;
+}
+
+.np-pill-group .pill {
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.np-pill-group .pill.active {
+  background: var(--accent);
+  border-color: transparent;
+  color: #fff;
 }
 
 /* Retro Turntable & Cassette */
@@ -1167,6 +1219,8 @@ input, select, textarea {
 .np-right {
   height: 100%;
   min-height: 0;
+  min-width: 0;
+  width: 100%;
   display: flex;
   flex-direction: column;
 }
@@ -1256,7 +1310,7 @@ input, select, textarea {
   width: 46px;
   height: 26px;
   border-radius: 999px;
-  background: var(--border);
+  background: rgba(128, 134, 150, 0.32);
   padding: 2px;
   flex-shrink: 0;
   display: inline-flex;
@@ -1496,8 +1550,12 @@ input, select, textarea {
   }
 
   /* Phone Now Playing single-column with switcher */
+  .np-content {
+    padding: calc(var(--safe-top) + 12px) calc(var(--safe-right) + 16px) calc(var(--safe-bottom) + 18px) calc(var(--safe-left) + 16px);
+  }
+
   .np-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     gap: 14px;
   }
 
