@@ -424,14 +424,14 @@ final class AudioEngine {
                 unprepare: tapUnprepareCallback,
                 process: tapProcessCallback
             )
-            var tapRef: Unmanaged<MTAudioProcessingTap>?
+            var tapOut: MTAudioProcessingTap?
             let err = MTAudioProcessingTapCreate(
                 kCFAllocatorDefault,
                 &callbacks,
                 kMTAudioProcessingTapCreationFlag_PostEffects,
-                &tapRef
+                &tapOut
             )
-            guard err == noErr, let tap = tapRef?.takeRetainedValue() else {
+            guard err == noErr, let tap = tapOut else {
                 Unmanaged.passUnretained(state).release()
                 return
             }
