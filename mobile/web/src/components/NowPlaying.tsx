@@ -1,12 +1,26 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { api, imageProxyUrl } from "../api";
 import { formatDuration } from "../i18n";
-import type { Comment, ParsedLyrics, Track } from "../types";
+import type {
+  Comment,
+  CoverPalette,
+  MobileSettings,
+  ParsedLyrics,
+  StageStyle,
+  Track,
+} from "../types";
+import { FogBackdrop } from "./FogBackdrop";
 import { Icon } from "./Icons";
+import { QuietCommentCard, useQuietComment } from "./QuietComments";
+import { RetroPlayer } from "./RetroPlayer";
+import { SmokeScrubber } from "./SmokeScrubber";
+import { StageLyrics } from "./StageLyrics";
 
 interface NowPlayingProps {
   open: boolean;
   onClose: () => void;
+  onAnimatingChange?: (hidingMiniCover: boolean) => void;
+  miniCoverRect: DOMRect | null;
   track: Track | null;
   queue: Track[];
   index: number;
@@ -22,6 +36,9 @@ interface NowPlayingProps {
   canComments: boolean;
   canPostComment: boolean;
   canLikeComment: boolean;
+  settings: MobileSettings;
+  palette: CoverPalette;
+  onUpdateSettings: (patch: Partial<MobileSettings>) => Promise<void>;
   onTogglePlay: () => void;
   onPrev: () => void;
   onNext: () => void;
@@ -34,9 +51,13 @@ interface NowPlayingProps {
   t: (k: string) => string;
 }
 
+type PanelTab = "lyrics" | "stage" | "queue" | "comments";
+
 export const NowPlaying: React.FC<NowPlayingProps> = ({
   open,
   onClose,
+  onAnimatingChange,
+  miniCoverRect,
   track,
   queue,
   index,
@@ -52,6 +73,9 @@ export const NowPlaying: React.FC<NowPlayingProps> = ({
   canComments,
   canPostComment,
   canLikeComment,
+  settings,
+  palette,
+  onUpdateSettings,
   onTogglePlay,
   onPrev,
   onNext,
@@ -63,29 +87,124 @@ export const NowPlaying: React.FC<NowPlayingProps> = ({
   onToast,
   t,
 }) => {
-  const [rightTab, setRightTab] = useState<"lyrics" | "queue" | "comments">("lyrics");
-  const [mobilePanel, setMobilePanel] = useState<"cover" | "lyrics" | "queue" | "comments">("cover");
+  const [rightTab, setRightTab] = useState<PanelTab>(settings.lyricsStage ? "stage" : "lyrics");
+  const [mobilePanel, setMobilePanel] = useState<"cover" | PanelTab>(settings.lyricsStage ? "stage" : "cover");
   const [lyricsData, setLyricsData] = useState<ParsedLyrics>({ lines: [] });
+  const [lyricsLoaded, setLyricsLoaded] = useState(false);
   const [comments, setComments] = useState<Comment[]>([]);
   const [commentsMore, setCommentsMore] = useState(false);
   const [commentText, setCommentText] = useState("");
   const [scrubMs, setScrubMs] = useState<number | null>(null);
+  const [narrow, setNarrow] = useState(() => window.innerWidth <= 820);
+
+  // Open / close transition & GrowFromCover state
+  const [mounted, setMounted] = useState(open);
+  const [phase, setPhase] = useState<"closed" | "entering" | "open" | "closing">(open ? "open" : "closed");
+  const [pullY, setPullY] = useState(0);
+  const pullStartY = useRef<number | null>(null);
+  const pullStartT = useRef(0);
+  const artHolderRef = useRef<HTMLDivElement | null>(null);
+  const [coverDelta, setCoverDelta] = useState<{ dx: number; dy: number; scale: number } | null>(null);
+
   const activeLineRef = useRef<HTMLDivElement | null>(null);
-
   const sourceId = track?.source || "local";
+  const effectiveDuration = durationMs || track?.duration || 0;
+  const reducedMotion = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+  const growMode = settings.growFromCover && !reducedMotion && !!miniCoverRect;
 
   useEffect(() => {
-    if (!open || !track) return;
+    const onResize = () => setNarrow(window.innerWidth <= 820);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  // Sync preferred stage tab from settings when opening
+  useEffect(() => {
+    if (open) {
+      if (settings.lyricsStage) {
+        setRightTab("stage");
+        setMobilePanel("stage");
+      } else if (rightTab === "stage") {
+        setRightTab("lyrics");
+        if (mobilePanel === "stage") setMobilePanel("cover");
+      }
+    }
+  }, [open, settings.lyricsStage]);
+
+  // Open / close animation lifecycle (GrowFromCover FLIP or bottom slide)
+  useEffect(() => {
+    if (open && track) {
+      setMounted(true);
+      setPhase("entering");
+      setPullY(0);
+      if (growMode) onAnimatingChange?.(true);
+
+      const id1 = requestAnimationFrame(() => {
+        if (growMode && artHolderRef.current && miniCoverRect) {
+          const target = artHolderRef.current.getBoundingClientRect();
+          if (target.width > 0) {
+            setCoverDelta({
+              dx: miniCoverRect.left - target.left,
+              dy: miniCoverRect.top - target.top,
+              scale: miniCoverRect.width / target.width,
+            });
+          }
+        } else {
+          setCoverDelta(null);
+        }
+        requestAnimationFrame(() => {
+          setPhase("open");
+        });
+      });
+      return () => cancelAnimationFrame(id1);
+    } else if (mounted) {
+      if (growMode && artHolderRef.current && miniCoverRect) {
+        const target = artHolderRef.current.getBoundingClientRect();
+        if (target.width > 0) {
+          setCoverDelta({
+            dx: miniCoverRect.left - target.left,
+            dy: miniCoverRect.top - target.top,
+            scale: miniCoverRect.width / target.width,
+          });
+        }
+      }
+      setPhase("closing");
+      const timer = window.setTimeout(() => {
+        setMounted(false);
+        setPhase("closed");
+        setPullY(0);
+        onAnimatingChange?.(false);
+      }, 360);
+      return () => window.clearTimeout(timer);
+    }
+  }, [open, !!track]);
+
+  // Fetch lyrics whenever track changes while mounted
+  useEffect(() => {
+    if (!mounted || !track) return;
     setLyricsData({ lines: [] });
+    setLyricsLoaded(false);
     api
-      .lyrics(sourceId, track.id)
-      .then((res) => setLyricsData(res))
-      .catch(() => setLyricsData({ lines: [] }));
-  }, [open, track?.id, sourceId]);
+      .lyrics(sourceId, track.id, effectiveDuration)
+      .then((res) => {
+        setLyricsData(res);
+        setLyricsLoaded(true);
+      })
+      .catch(() => {
+        setLyricsData({ lines: [] });
+        setLyricsLoaded(true);
+      });
+  }, [mounted, track?.id, sourceId]);
 
+  // Fetch comments either when comments tab is opened OR proactively when hotComments is enabled
   useEffect(() => {
-    if (!open || !track || !canComments) return;
-    if (rightTab !== "comments" && mobilePanel !== "comments") return;
+    if (!mounted || !track || !canComments) {
+      setComments([]);
+      return;
+    }
+    const needNow =
+      settings.hotComments || rightTab === "comments" || mobilePanel === "comments";
+    if (!needNow) return;
     api
       .comments(sourceId, track.id, 0)
       .then((res) => {
@@ -93,7 +212,7 @@ export const NowPlaying: React.FC<NowPlayingProps> = ({
         setCommentsMore(!!res.more);
       })
       .catch(() => setComments([]));
-  }, [open, track?.id, sourceId, canComments, rightTab, mobilePanel]);
+  }, [mounted, track?.id, sourceId, canComments, settings.hotComments, rightTab, mobilePanel]);
 
   const activeLineIdx = useMemo(() => {
     const lines = lyricsData.lines;
@@ -112,11 +231,33 @@ export const NowPlaying: React.FC<NowPlayingProps> = ({
     }
   }, [activeLineIdx]);
 
-  if (!open || !track) return null;
+  const quietActive = useQuietComment({
+    enabled: settings.hotComments && canComments,
+    lines: lyricsData.lines,
+    quiets: lyricsData.quiets,
+    lyricsLoaded,
+    durationMs: effectiveDuration,
+    positionMs,
+    comments,
+  });
+
+  if (!mounted || !track) return null;
 
   const art = imageProxyUrl(track.album?.imageUrl, 600);
-  const effectiveDuration = durationMs || track.duration || 0;
   const displayPos = scrubMs !== null ? scrubMs : positionMs;
+  const activePanel: "cover" | PanelTab = narrow ? mobilePanel : rightTab;
+  const isStageMode = activePanel === "stage";
+
+  const switchTab = (tab: "cover" | PanelTab) => {
+    if (tab !== "cover") {
+      setRightTab(tab);
+      const nextStage = tab === "stage";
+      if (nextStage !== settings.lyricsStage) {
+        onUpdateSettings({ lyricsStage: nextStage }).catch(() => {});
+      }
+    }
+    setMobilePanel(tab);
+  };
 
   const handleSendComment = async () => {
     const text = commentText.trim();
@@ -145,177 +286,374 @@ export const NowPlaying: React.FC<NowPlayingProps> = ({
     }
   };
 
-  const activeRightPanel = window.innerWidth <= 820 ? mobilePanel : rightTab;
+  // Pull-down to dismiss gesture on topbar
+  const handleTopPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if ((e.target as HTMLElement).closest("button")) return;
+    pullStartY.current = e.clientY;
+    pullStartT.current = performance.now();
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const handleTopPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (pullStartY.current === null) return;
+    const dy = Math.max(0, e.clientY - pullStartY.current);
+    // Rubberband feel matching desktop ui_nowplaying.go
+    const damped = dy > 0 ? dy / (1 + dy / 900) : 0;
+    setPullY(damped);
+  };
+
+  const handleTopPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (pullStartY.current === null) return;
+    const dy = Math.max(0, e.clientY - pullStartY.current);
+    const dt = Math.max(0.01, (performance.now() - pullStartT.current) / 1000);
+    const vy = dy / dt;
+    pullStartY.current = null;
+    if (dy > window.innerHeight * 0.2 || (dy > 24 && vy > 700)) {
+      onClose();
+    } else {
+      setPullY(0);
+    }
+  };
+
+  // Compute container transition style (GrowFromCover clip-path vs bottom slide vs reduced fade)
+  const overlayStyle: React.CSSProperties = {};
+  const isCollapsed = phase === "entering" || phase === "closing";
+  if (reducedMotion) {
+    overlayStyle.opacity = isCollapsed ? 0 : 1;
+    overlayStyle.transition = "opacity 200ms ease";
+  } else if (growMode && miniCoverRect) {
+    const vw = window.innerWidth || 1;
+    const vh = window.innerHeight || 1;
+    const top = Math.max(0, miniCoverRect.top);
+    const left = Math.max(0, miniCoverRect.left);
+    const right = Math.max(0, vw - miniCoverRect.right);
+    const bottom = Math.max(0, vh - miniCoverRect.bottom);
+    const pulled = Math.min(1, pullY / 160);
+    const pullRadius = Math.round(pulled * 28);
+    overlayStyle.clipPath = isCollapsed
+      ? `inset(${top}px ${right}px ${bottom}px ${left}px round 10px)`
+      : `inset(0px 0px 0px 0px round ${pullRadius}px)`;
+    if (!isCollapsed && pullY > 0) {
+      const sc = 1 - 0.12 * pulled;
+      overlayStyle.transform = `translate3d(0, ${pullY}px, 0) scale(${sc})`;
+      overlayStyle.transition = "none";
+    } else {
+      overlayStyle.transform = "translate3d(0, 0, 0) scale(1)";
+      overlayStyle.transition =
+        "clip-path 340ms cubic-bezier(0.22, 1, 0.36, 1), transform 340ms cubic-bezier(0.22, 1, 0.36, 1)";
+    }
+  } else {
+    overlayStyle.transform = isCollapsed
+      ? "translate3d(0, 100%, 0)"
+      : `translate3d(0, ${pullY}px, 0)`;
+    overlayStyle.transition =
+      !isCollapsed && pullY > 0 ? "none" : "transform 340ms cubic-bezier(0.22, 1, 0.36, 1)";
+  }
+
+  const coverMorphStyle: React.CSSProperties | undefined =
+    growMode && coverDelta
+      ? {
+          transformOrigin: "top left",
+          transform: isCollapsed
+            ? `translate3d(${coverDelta.dx}px, ${coverDelta.dy}px, 0) scale(${coverDelta.scale})`
+            : "translate3d(0, 0, 0) scale(1)",
+          transition: "transform 340ms cubic-bezier(0.22, 1, 0.36, 1)",
+        }
+      : undefined;
+
+  const riseStyle = (level: number): React.CSSProperties | undefined => {
+    if (!growMode) return undefined;
+    const delayMs = isCollapsed ? 0 : 70 + level * 35;
+    return {
+      opacity: isCollapsed ? 0 : 1,
+      transform: isCollapsed ? "translate3d(0, 22px, 0)" : "translate3d(0, 0, 0)",
+      transition: `opacity 260ms ease ${delayMs}ms, transform 320ms cubic-bezier(0.22, 1, 0.36, 1) ${delayMs}ms`,
+    };
+  };
 
   return (
-    <div className="np-overlay">
-      {art && <div className="np-backdrop" style={{ backgroundImage: `url(${art})` }} />}
+    <div className={`np-overlay ${growMode ? "grow-mode" : ""}`} style={overlayStyle}>
+      <FogBackdrop enabled={settings.fog} playing={playing} palette={palette} artUrl={art} />
+
       <div className="np-content">
-        <div className="np-topbar">
+        <div
+          className="np-topbar"
+          style={riseStyle(0)}
+          onPointerDown={handleTopPointerDown}
+          onPointerMove={handleTopPointerMove}
+          onPointerUp={handleTopPointerUp}
+        >
           <button className="icon-btn" style={{ color: "#fff" }} onClick={onClose} aria-label="Close">
             <Icon name="chevron-down" size={24} />
           </button>
-          <div style={{ display: "flex", gap: 6 }}>
+
+          <div className="np-pill-group">
+            {narrow && (
+              <button
+                className={`pill ${mobilePanel === "cover" ? "active" : ""}`}
+                onClick={() => switchTab("cover")}
+              >
+                {t("Cover")}
+              </button>
+            )}
             <button
-              className={`pill ${mobilePanel === "cover" ? "active" : ""}`}
-              style={{ display: window.innerWidth <= 820 ? "inline-flex" : "none" }}
-              onClick={() => setMobilePanel("cover")}
-            >
-              {t("Home")}
-            </button>
-            <button
-              className={`pill ${(window.innerWidth <= 820 ? mobilePanel : rightTab) === "lyrics" ? "active" : ""}`}
-              onClick={() => {
-                setRightTab("lyrics");
-                setMobilePanel("lyrics");
-              }}
+              className={`pill ${activePanel === "lyrics" ? "active" : ""}`}
+              onClick={() => switchTab("lyrics")}
             >
               {t("Lyrics")}
             </button>
             <button
-              className={`pill ${(window.innerWidth <= 820 ? mobilePanel : rightTab) === "queue" ? "active" : ""}`}
-              onClick={() => {
-                setRightTab("queue");
-                setMobilePanel("queue");
-              }}
+              className={`pill ${activePanel === "stage" ? "active" : ""}`}
+              onClick={() => switchTab("stage")}
+            >
+              {t("Stage")}
+            </button>
+            <button
+              className={`pill ${activePanel === "queue" ? "active" : ""}`}
+              onClick={() => switchTab("queue")}
             >
               {t("Queue")} ({queue.length})
             </button>
             {canComments && (
               <button
-                className={`pill ${(window.innerWidth <= 820 ? mobilePanel : rightTab) === "comments" ? "active" : ""}`}
-                onClick={() => {
-                  setRightTab("comments");
-                  setMobilePanel("comments");
-                }}
+                className={`pill ${activePanel === "comments" ? "active" : ""}`}
+                onClick={() => switchTab("comments")}
               >
                 {t("Comments")}
               </button>
             )}
           </div>
+
           <div style={{ width: 36 }} />
         </div>
 
-        <div className="np-grid">
-          <div className={`np-left ${mobilePanel !== "cover" ? "np-mobile-hidden" : ""}`}>
-            <div className="np-art">
-              {art ? <img src={art} alt="" /> : <Icon name="note" size={64} />}
-            </div>
-
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 21, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {track.name}
-                </div>
-                <div style={{ fontSize: 15, color: "rgba(255,255,255,0.72)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {(track.artists || []).map((a) => a.name).join(", ")}
-                </div>
-              </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                {qualityBadge && <span className="badge">{qualityBadge}</span>}
-                {canLike && (
-                  <button className={`icon-btn ${liked ? "accent" : ""}`} style={{ color: liked ? "var(--accent)" : "#fff" }} onClick={onToggleLike}>
-                    <Icon name="heart" size={22} filled={liked} />
-                  </button>
-                )}
-              </div>
-            </div>
-
-            <div>
-              <input
-                type="range"
-                className="scrubber"
-                style={{ width: "100%" }}
-                min={0}
-                max={Math.max(effectiveDuration, 1)}
-                value={Math.min(displayPos, effectiveDuration || 1)}
-                onChange={(e) => setScrubMs(Number(e.target.value))}
-                onMouseUp={() => {
-                  if (scrubMs !== null) {
-                    onSeek(scrubMs);
-                    setScrubMs(null);
-                  }
+        {isStageMode ? (
+          /* Fullscreen Stage Lyrics view + compact bottom stageBar matching desktop ui_nowplaying.go */
+          <div className="np-stage-layout">
+            <div className="np-stage-main" style={riseStyle(1)}>
+              <StageLyrics
+                lyrics={lyricsData}
+                lyricsLoaded={lyricsLoaded}
+                playing={playing}
+                positionMs={displayPos}
+                stageStyle={settings.stageStyle}
+                stageSparks={settings.stageSparks}
+                accent={palette.accent}
+                quietActive={quietActive}
+                onChangeStyle={(st: StageStyle) => {
+                  onUpdateSettings({ stageStyle: st }).catch(() => {});
                 }}
-                onTouchEnd={() => {
-                  if (scrubMs !== null) {
-                    onSeek(scrubMs);
-                    setScrubMs(null);
-                  }
+                onToggleSparks={() => {
+                  onUpdateSettings({ stageSparks: !settings.stageSparks }).catch(() => {});
                 }}
+                onOpenComments={() => switchTab("comments")}
+                t={t}
               />
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "rgba(255,255,255,0.6)", marginTop: 4 }}>
-                <span>{formatDuration(displayPos)}</span>
-                <span>{buffering ? "..." : formatDuration(effectiveDuration)}</span>
-              </div>
             </div>
 
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 12px" }}>
-              <button
-                className="icon-btn"
-                style={{ color: shuffle ? "var(--accent)" : "rgba(255,255,255,0.75)" }}
-                onClick={onToggleShuffle}
-              >
-                <Icon name="shuffle" size={20} />
-              </button>
-              <button className="icon-btn" style={{ color: "#fff" }} onClick={onPrev}>
-                <Icon name="prev" size={28} />
-              </button>
-              <button
-                className="play-circle"
-                style={{ width: 58, height: 58, background: "#fff", color: "#111" }}
-                onClick={onTogglePlay}
-              >
-                <Icon name={playing ? "pause" : "play"} size={28} />
-              </button>
-              <button className="icon-btn" style={{ color: "#fff" }} onClick={onNext}>
-                <Icon name="next" size={28} />
-              </button>
-              <button
-                className="icon-btn"
-                style={{ color: repeatMode !== "off" ? "var(--accent)" : "rgba(255,255,255,0.75)", position: "relative" }}
-                onClick={onCycleRepeat}
-              >
-                <Icon name="repeat" size={20} />
-                {repeatMode === "one" && (
-                  <span style={{ position: "absolute", fontSize: 9, fontWeight: 800, bottom: 3, right: 4 }}>1</span>
-                )}
-              </button>
+            <div className="np-stage-bar" style={riseStyle(2)}>
+              <div className="np-stage-scrubber-row">
+                <span className="np-time-tag">{formatDuration(displayPos)}</span>
+                <div style={{ flex: 1 }}>
+                  <SmokeScrubber
+                    value={displayPos}
+                    max={effectiveDuration}
+                    playing={playing}
+                    buffering={buffering}
+                    smokeEnabled={settings.smoke}
+                    accent={palette.accent}
+                    onChange={(ms) => setScrubMs(ms)}
+                    onCommit={(ms) => {
+                      setScrubMs(null);
+                      onSeek(ms);
+                    }}
+                    compact
+                  />
+                </div>
+                <span className="np-time-tag">{buffering ? "..." : formatDuration(effectiveDuration)}</span>
+              </div>
+
+              <div className="np-stage-controls-row">
+                <div className="np-stage-track">
+                  <div ref={artHolderRef} className="np-stage-cover" style={coverMorphStyle}>
+                    {art ? <img src={art} alt="" /> : <Icon name="note" size={20} />}
+                  </div>
+                  <div style={{ minWidth: 0 }}>
+                    <div className="truncate" style={{ fontSize: 14, fontWeight: 700 }}>{track.name}</div>
+                    <div className="truncate" style={{ fontSize: 12, color: "rgba(255,255,255,0.68)" }}>
+                      {(track.artists || []).map((a) => a.name).join(", ")}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="np-stage-buttons">
+                  <button className="icon-btn" style={{ color: "#fff" }} onClick={onPrev}>
+                    <Icon name="prev" size={22} />
+                  </button>
+                  <button
+                    className="play-btn"
+                    style={{ width: 42, height: 42, background: "#fff", color: "#111" }}
+                    onClick={onTogglePlay}
+                  >
+                    <Icon name={playing ? "pause" : "play"} size={20} />
+                  </button>
+                  <button className="icon-btn" style={{ color: "#fff" }} onClick={onNext}>
+                    <Icon name="next" size={22} />
+                  </button>
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "flex-end" }}>
+                  {qualityBadge && <span className="badge">{qualityBadge}</span>}
+                  {canLike && (
+                    <button
+                      className="icon-btn"
+                      style={{ color: liked ? "var(--accent)" : "#fff" }}
+                      onClick={onToggleLike}
+                    >
+                      <Icon name="heart" size={20} filled={liked} />
+                    </button>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
+        ) : (
+          /* Standard two-column (iPad) / tabbed (Phone) Now Playing view */
+          <div className="np-grid">
+            <div className={`np-left ${narrow && mobilePanel !== "cover" ? "np-mobile-hidden" : ""}`}>
+              <div ref={artHolderRef} className="np-art-holder" style={coverMorphStyle}>
+                <RetroPlayer
+                  styleMode={settings.playerStyle}
+                  track={track}
+                  artUrl={art}
+                  playing={playing}
+                  positionMs={displayPos}
+                  durationMs={effectiveDuration}
+                  palette={palette}
+                />
+              </div>
 
-          <div className={`np-right ${mobilePanel === "cover" ? "np-mobile-hidden" : ""}`}>
-            <div className="np-scroll" lang={lyricsData.lang || undefined}>
-              {activeRightPanel === "lyrics" && (
-                lyricsData.lines.length === 0 ? (
-                  <div style={{ color: "rgba(255,255,255,0.5)", paddingTop: 40, textAlign: "center" }}>
-                    {t("No lyrics")}
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, ...riseStyle(1) }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 21, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {track.name}
                   </div>
-                ) : (
-                  <div style={{ padding: "24px 0 80px" }}>
-                    {lyricsData.lines.map((line, i) => (
-                      <div
-                        key={`${line.atMs}-${i}`}
-                        ref={i === activeLineIdx ? activeLineRef : null}
-                        className={`lyric-line ${i === activeLineIdx ? "active" : ""}`}
-                        onClick={() => onSeek(line.atMs)}
-                      >
-                        <div>{line.text}</div>
-                        {line.translation && <div className="lyric-trans">{line.translation}</div>}
+                  <div style={{ fontSize: 15, color: "rgba(255,255,255,0.72)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {(track.artists || []).map((a) => a.name).join(", ")}
+                  </div>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  {qualityBadge && <span className="badge">{qualityBadge}</span>}
+                  {canLike && (
+                    <button
+                      className={`icon-btn ${liked ? "accent" : ""}`}
+                      style={{ color: liked ? "var(--accent)" : "#fff" }}
+                      onClick={onToggleLike}
+                    >
+                      <Icon name="heart" size={22} filled={liked} />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div style={riseStyle(2)}>
+                <SmokeScrubber
+                  value={displayPos}
+                  max={effectiveDuration}
+                  playing={playing}
+                  buffering={buffering}
+                  smokeEnabled={settings.smoke}
+                  accent={palette.accent}
+                  onChange={(ms) => setScrubMs(ms)}
+                  onCommit={(ms) => {
+                    setScrubMs(null);
+                    onSeek(ms);
+                  }}
+                />
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "rgba(255,255,255,0.6)", marginTop: 4 }}>
+                  <span>{formatDuration(displayPos)}</span>
+                  <span>{buffering ? "..." : formatDuration(effectiveDuration)}</span>
+                </div>
+              </div>
+
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 6px", ...riseStyle(3) }}>
+                <button
+                  className="icon-btn"
+                  style={{ color: shuffle ? "var(--accent)" : "rgba(255,255,255,0.75)" }}
+                  onClick={onToggleShuffle}
+                >
+                  <Icon name="shuffle" size={20} />
+                </button>
+                <button className="icon-btn" style={{ color: "#fff" }} onClick={onPrev}>
+                  <Icon name="prev" size={28} />
+                </button>
+                <button
+                  className="play-btn"
+                  style={{ width: 60, height: 60, background: "#fff", color: "#111" }}
+                  onClick={onTogglePlay}
+                >
+                  <Icon name={playing ? "pause" : "play"} size={28} />
+                </button>
+                <button className="icon-btn" style={{ color: "#fff" }} onClick={onNext}>
+                  <Icon name="next" size={28} />
+                </button>
+                <button
+                  className="icon-btn"
+                  style={{ color: repeatMode !== "off" ? "var(--accent)" : "rgba(255,255,255,0.75)", position: "relative" }}
+                  onClick={onCycleRepeat}
+                >
+                  <Icon name="repeat" size={20} />
+                  {repeatMode === "one" && (
+                    <span style={{ position: "absolute", fontSize: 9, fontWeight: 800, bottom: 2, right: 2 }}>1</span>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            <div className={`np-right ${narrow && mobilePanel === "cover" ? "np-mobile-hidden" : ""}`} style={riseStyle(2)}>
+              {activePanel === "lyrics" && (
+                <div className="np-lyrics-container">
+                  <div
+                    className={`np-scroll np-lyrics-scroll ${quietActive?.visible ? "faded-under-quiet" : ""}`}
+                    lang={lyricsData.lang || undefined}
+                  >
+                    {lyricsData.lines.length === 0 ? (
+                      <div style={{ color: "rgba(255,255,255,0.5)", padding: "40px 10px", textAlign: "center" }}>
+                        {lyricsLoaded ? t("No lyrics. Enjoy the music.") : "..."}
                       </div>
-                    ))}
+                    ) : (
+                      lyricsData.lines.map((line, i) => (
+                        <div
+                          key={`${line.atMs}-${i}`}
+                          ref={i === activeLineIdx ? activeLineRef : null}
+                          className={`lyric-line ${i === activeLineIdx ? "active" : ""}`}
+                          onClick={() => onSeek(line.atMs)}
+                        >
+                          <div>{line.text}</div>
+                          {line.translation && <div className="lyric-trans">{line.translation}</div>}
+                        </div>
+                      ))
+                    )}
                   </div>
-                )
+
+                  <QuietCommentCard
+                    active={quietActive}
+                    onOpenComments={() => switchTab("comments")}
+                    t={t}
+                  />
+                </div>
               )}
 
-              {activeRightPanel === "queue" && (
-                <div className="track-list">
+              {activePanel === "queue" && (
+                <div className="np-scroll">
                   {queue.map((qt, qi) => (
                     <div
                       key={`${qt.id}-${qi}`}
                       className={`track-row ${qi === index ? "playing" : ""}`}
+                      style={{ color: "#fff" }}
                       onClick={() => onSelectQueueIndex(qi)}
                     >
-                      <div className="track-thumb">
+                      <div className="track-art">
                         {qt.album?.imageUrl ? (
                           <img src={imageProxyUrl(qt.album.imageUrl, 96)} alt="" />
                         ) : (
@@ -323,26 +661,28 @@ export const NowPlaying: React.FC<NowPlayingProps> = ({
                         )}
                       </div>
                       <div className="track-meta">
-                        <div className="track-name" style={{ color: qi === index ? "var(--accent)" : "#fff" }}>
+                        <div className="track-title" style={{ color: qi === index ? "var(--accent)" : "#fff" }}>
                           {qt.name}
                         </div>
-                        <div className="track-sub" style={{ color: "rgba(255,255,255,0.6)" }}>
+                        <div className="track-sub" style={{ color: "rgba(255,255,255,0.65)" }}>
                           {(qt.artists || []).map((a) => a.name).join(", ")}
                         </div>
                       </div>
-                      <span className="track-dur">{formatDuration(qt.duration)}</span>
+                      <div className="track-dur" style={{ color: "rgba(255,255,255,0.6)" }}>
+                        {formatDuration(qt.duration)}
+                      </div>
                     </div>
                   ))}
                 </div>
               )}
 
-              {activeRightPanel === "comments" && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {activePanel === "comments" && (
+                <div className="np-right">
                   {canPostComment && (
-                    <div style={{ display: "flex", gap: 8 }}>
+                    <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
                       <input
                         className="form-input"
-                        style={{ flex: 1, background: "rgba(255,255,255,0.1)", color: "#fff" }}
+                        style={{ flex: 1, background: "rgba(255,255,255,0.1)", color: "#fff", borderColor: "rgba(255,255,255,0.2)" }}
                         placeholder={t("Write a comment...")}
                         value={commentText}
                         onChange={(e) => setCommentText(e.target.value)}
@@ -353,57 +693,61 @@ export const NowPlaying: React.FC<NowPlayingProps> = ({
                       </button>
                     </div>
                   )}
-                  {comments.length === 0 ? (
-                    <div style={{ color: "rgba(255,255,255,0.5)", textAlign: "center", paddingTop: 28 }}>
-                      {t("No comments yet")}
-                    </div>
-                  ) : (
-                    comments.map((c) => (
-                      <div
-                        key={c.id}
-                        style={{
-                          padding: 12,
-                          borderRadius: 12,
-                          background: "rgba(255,255,255,0.07)",
-                          display: "flex",
-                          flexDirection: "column",
-                          gap: 6,
-                        }}
-                      >
-                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                          <span style={{ fontWeight: 600, fontSize: 13 }}>{c.author}</span>
-                          {canLikeComment && (
+                  <div className="np-scroll">
+                    {comments.length === 0 ? (
+                      <div style={{ color: "rgba(255,255,255,0.5)", padding: "40px 10px", textAlign: "center" }}>
+                        {t("No comments yet")}
+                      </div>
+                    ) : (
+                      comments.map((c) => (
+                        <div
+                          key={c.id}
+                          style={{
+                            padding: "12px 10px",
+                            borderBottom: "1px solid rgba(255,255,255,0.1)",
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 6,
+                          }}
+                        >
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13 }}>
+                            <strong style={{ color: "rgba(255,255,255,0.9)" }}>{c.author}</strong>
                             <button
-                              style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, color: c.liked ? "var(--accent)" : "rgba(255,255,255,0.65)" }}
+                              className="icon-btn"
+                              style={{ color: c.liked ? "var(--accent)" : "rgba(255,255,255,0.6)", fontSize: 12, width: "auto", gap: 4, padding: "2px 6px" }}
                               onClick={() => handleLikeComment(c)}
                             >
                               <Icon name="heart" size={14} filled={!!c.liked} />
-                              <span>{c.likes || 0}</span>
+                              {c.likes || 0}
                             </button>
-                          )}
+                          </div>
+                          <div style={{ fontSize: 14, lineHeight: 1.5, color: "rgba(255,255,255,0.85)" }}>{c.text}</div>
                         </div>
-                        <div style={{ fontSize: 14, color: "rgba(255,255,255,0.9)" }}>{c.text}</div>
-                      </div>
-                    ))
-                  )}
-                  {commentsMore && (
-                    <button
-                      className="btn"
-                      onClick={() =>
-                        api.comments(sourceId, track.id, comments.length).then((res) => {
-                          setComments((prev) => [...prev, ...(res.comments || [])]);
-                          setCommentsMore(!!res.more);
-                        })
-                      }
-                    >
-                      {t("Load More")}
-                    </button>
-                  )}
+                      ))
+                    )}
+                    {commentsMore && (
+                      <button
+                        className="btn"
+                        style={{ margin: "14px auto", display: "flex" }}
+                        onClick={() =>
+                          api
+                            .comments(sourceId, track.id, comments.length)
+                            .then((res) => {
+                              setComments((prev) => [...prev, ...(res.comments || [])]);
+                              setCommentsMore(!!res.more);
+                            })
+                            .catch(() => {})
+                        }
+                      >
+                        {t("Load More")}
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );

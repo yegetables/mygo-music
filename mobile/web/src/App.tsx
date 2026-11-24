@@ -1,9 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, imageProxyUrl, IS_NATIVE, postNative } from "./api";
+import { audioRuntime } from "./audioRuntime";
 import { Icon } from "./components/Icons";
 import { NowPlaying } from "./components/NowPlaying";
 import { PluginInstallModal, SignInModal } from "./components/PluginModal";
+import { SmokeScrubber } from "./components/SmokeScrubber";
 import { TrackList } from "./components/TrackList";
+import { UpdateModal } from "./components/UpdateModal";
 import { createT, formatDuration } from "./i18n";
 import { SettingsPage } from "./pages/SettingsPage";
 import type {
@@ -11,6 +14,7 @@ import type {
   Album,
   Artist,
   BrowsePage,
+  CoverPalette,
   MobileSettings,
   NavItem,
   PendingPlugin,
@@ -23,8 +27,18 @@ import type {
   SourceSummary,
   Station,
   Track,
+  UpdateDownloadProgress,
+  UpdateRelease,
+  UpdateStatus,
   WebSignInPayload,
 } from "./types";
+
+const DEFAULT_PALETTE: CoverPalette = {
+  tint: { r: 120, g: 120, b: 130 },
+  accent: { r: 181, g: 181, b: 186 },
+  deep: { r: 70, g: 70, b: 77 },
+  fog: { r: 175, g: 175, b: 184 },
+};
 
 type Route =
   | { kind: "home" }
@@ -71,7 +85,18 @@ export const App: React.FC = () => {
     quality: "high",
     language: "system",
     theme: "system",
-    cacheLimitMB: 512,
+    cacheLimitMB: 2048,
+    playerStyle: "",
+    hotComments: false,
+    normalize: true,
+    smoke: false,
+    fog: false,
+    growFromCover: false,
+    lyricsStage: false,
+    stageStyle: "",
+    stageSparks: false,
+    updateChannel: "fork",
+    autoCheckUpdates: true,
   });
   const [sources, setSources] = useState<SourceSummary[]>([]);
   const [account, setAccount] = useState<Account | null>(null);
@@ -113,6 +138,16 @@ export const App: React.FC = () => {
   const [nowPlayingOpen, setNowPlayingOpen] = useState(false);
   const [likedMap, setLikedMap] = useState<Record<string, boolean>>({});
   const [scrubMs, setScrubMs] = useState<number | null>(null);
+  const [trackNormGain, setTrackNormGain] = useState<number>(1.0);
+  const [palette, setPalette] = useState<CoverPalette>(DEFAULT_PALETTE);
+  const [miniCoverRect, setMiniCoverRect] = useState<DOMRect | null>(null);
+  const [hideMiniCover, setHideMiniCover] = useState(false);
+
+  // App updater state
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [updateModalRelease, setUpdateModalRelease] = useState<UpdateRelease | null>(null);
+  const [updateProgress, setUpdateProgress] = useState<UpdateDownloadProgress | null>(null);
 
   // Modals & toast
   const [installOpen, setInstallOpen] = useState(false);
@@ -121,14 +156,19 @@ export const App: React.FC = () => {
   const [signInStatus, setSignInStatus] = useState("");
   const [toast, setToast] = useState("");
 
+  const miniCoverRef = useRef<HTMLDivElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const playbackRef = useRef({ queue, queueIndex, repeatMode, shuffle, stationCtx, playing, positionMs });
   playbackRef.current = { queue, queueIndex, repeatMode, shuffle, stationCtx, playing, positionMs };
 
   const t = useMemo(() => createT(settings.language), [settings.language]);
+  const enabledSources = useMemo(() => sources.filter((s) => !s.disabled), [sources]);
   const activeSource = useMemo(
-    () => sources.find((s) => s.info.id === settings.activeSource) || sources[0],
-    [sources, settings.activeSource]
+    () =>
+      enabledSources.find((s) => s.info.id === settings.activeSource) ||
+      enabledSources[0] ||
+      sources[0],
+    [enabledSources, sources, settings.activeSource]
   );
   const sourceId = activeSource?.info.id || "local";
   const currentTrack = queueIndex >= 0 && queueIndex < queue.length ? queue[queueIndex] : null;
@@ -165,10 +205,11 @@ export const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    Promise.all([api.getSettings(), api.getSources(), api.getSession()])
-      .then(([st, srcRes, sess]) => {
+    Promise.all([api.getSettings(), api.getSources(), api.getSession(), api.updateStatus().catch(() => null)])
+      .then(([st, srcRes, sess, upd]) => {
         setSettings(st);
         setSources(srcRes.sources || []);
+        if (upd) setUpdateStatus(upd);
         if (sess.queue && sess.queue.length > 0) {
           setQueue(sess.queue);
           setQueueIndex(sess.index);
@@ -182,6 +223,90 @@ export const App: React.FC = () => {
       })
       .catch((e) => showToast(e instanceof Error ? e.message : String(e)));
   }, [showToast]);
+
+  // Keep imperative audioRuntime synchronized for smooth 60fps animations
+  useEffect(() => {
+    audioRuntime.syncPlayback(positionMs, durationMs || currentTrack?.duration || 0, playing, buffering);
+  }, [positionMs, durationMs, currentTrack?.duration, playing, buffering]);
+
+  // Extract cover dominant palette whenever current track artwork changes
+  useEffect(() => {
+    const imgUrl = currentTrack?.album?.imageUrl;
+    if (!imgUrl) {
+      setPalette(DEFAULT_PALETTE);
+      return;
+    }
+    let cancelled = false;
+    api
+      .imagePalette(imgUrl)
+      .then((pal) => {
+        if (!cancelled && pal) setPalette(pal);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [currentTrack?.album?.imageUrl]);
+
+  // Apply loudness normalization gain immediately when toggled or track changes
+  useEffect(() => {
+    const effectiveGain = settings.normalize ? trackNormGain : 1.0;
+    if (IS_NATIVE) {
+      postNative("playerSetGain", { gain: effectiveGain });
+    } else if (audioRef.current) {
+      audioRef.current.volume = Math.max(0, Math.min(1, effectiveGain));
+    }
+  }, [settings.normalize, trackNormGain]);
+
+  // Toggle lightweight native bass metering only when Smoke or Fog is enabled
+  useEffect(() => {
+    if (IS_NATIVE) {
+      postNative("playerSetMetering", { enabled: !!(settings.smoke || settings.fog) });
+    }
+  }, [settings.smoke, settings.fog]);
+
+  // Automatic background update check (~10s after launch, at most once every 24h)
+  const runAppUpdateCheck = useCallback(
+    async (manual: boolean): Promise<UpdateRelease | null> => {
+      setCheckingUpdate(true);
+      try {
+        const res = await api.checkAppUpdate();
+        const st = await api.updateStatus().catch(() => null);
+        if (st) setUpdateStatus(st);
+        setSettings((prev) => ({ ...prev, lastUpdateCheck: res.checkedAt }));
+        if (res.hasUpdate) {
+          if (manual || !res.skipped) {
+            setUpdateProgress(null);
+            setUpdateModalRelease(res);
+          }
+        } else if (manual) {
+          showToast(`${t("Up to date")} (v${res.currentVersion})`);
+        }
+        return res;
+      } catch (e) {
+        if (manual) showToast(e instanceof Error ? e.message : String(e));
+        return null;
+      } finally {
+        setCheckingUpdate(false);
+      }
+    },
+    [showToast, t]
+  );
+
+  const autoCheckedRef = useRef(false);
+  useEffect(() => {
+    if (autoCheckedRef.current || !settings.autoCheckUpdates) return;
+    const last = settings.lastUpdateCheck ? Date.parse(settings.lastUpdateCheck) : 0;
+    if (last && Date.now() - last < 24 * 60 * 60 * 1000) {
+      autoCheckedRef.current = true;
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      autoCheckedRef.current = true;
+      runAppUpdateCheck(false);
+    }, 10000);
+    return () => window.clearTimeout(timer);
+  }, [settings.autoCheckUpdates, settings.lastUpdateCheck, runAppUpdateCheck]);
 
   // Load account & playlists whenever source changes
   const refreshSourceSidebar = useCallback(async () => {
@@ -356,6 +481,9 @@ export const App: React.FC = () => {
         const info = await api.streamInfo(src, track.id, settings.quality);
         const fullAudioUrl = `${window.location.origin}${info.streamUrl}`;
         const artworkUrl = track.album?.imageUrl ? imageProxyUrl(track.album.imageUrl, 512) : "";
+        const rawGain = typeof info.normGain === "number" && info.normGain > 0 ? info.normGain : 1.0;
+        const effectiveGain = settings.normalize ? rawGain : 1.0;
+        setTrackNormGain(rawGain);
         setQualityBadge((info.quality || info.type || "").toUpperCase());
 
         if (IS_NATIVE) {
@@ -367,10 +495,12 @@ export const App: React.FC = () => {
             artworkUrl,
             durationMs: track.duration || 0,
             autoplay,
+            normGain: effectiveGain,
           });
           setPlaying(autoplay);
         } else if (audioRef.current) {
           audioRef.current.src = fullAudioUrl;
+          audioRef.current.volume = Math.max(0, Math.min(1, effectiveGain));
           if (autoplay) {
             await audioRef.current.play();
             setPlaying(true);
@@ -383,7 +513,7 @@ export const App: React.FC = () => {
         showToast(e instanceof Error ? e.message : String(e));
       }
     },
-    [sourceId, settings.quality, showToast]
+    [sourceId, settings.quality, settings.normalize, showToast]
   );
 
   const playQueue = useCallback(
@@ -473,6 +603,7 @@ export const App: React.FC = () => {
 
   const handleSeek = useCallback((ms: number) => {
     setPositionMs(ms);
+    audioRuntime.seek(ms);
     if (IS_NATIVE) {
       postNative("playerSeek", { positionMs: Math.round(ms) });
     } else if (audioRef.current) {
@@ -484,6 +615,21 @@ export const App: React.FC = () => {
   useEffect(() => {
     window.__mygoNativeEvent = (name: string, payload: unknown) => {
       const p = (payload || {}) as Record<string, unknown>;
+      if (name === "audioLevel") {
+        audioRuntime.pushAudioLevel(Number(p.bass || 0), Boolean(p.live));
+        return;
+      }
+      if (name === "updateDownloadProgress") {
+        const prog: UpdateDownloadProgress = {
+          state: (p.state as UpdateDownloadProgress["state"]) || "downloading",
+          percent: typeof p.percent === "number" ? p.percent : undefined,
+          downloadedBytes: typeof p.downloadedBytes === "number" ? p.downloadedBytes : undefined,
+          totalBytes: typeof p.totalBytes === "number" ? p.totalBytes : undefined,
+          error: typeof p.error === "string" ? p.error : undefined,
+        };
+        setUpdateProgress(prog);
+        return;
+      }
       if (name === "playbackState") {
         if (typeof p.playing === "boolean") setPlaying(p.playing);
         if (typeof p.buffering === "boolean") setBuffering(p.buffering);
@@ -593,7 +739,18 @@ export const App: React.FC = () => {
     if (patch.language) {
       await refreshSources();
     }
+    if (patch.updateChannel !== undefined || patch.autoCheckUpdates !== undefined) {
+      api.updateStatus().then(setUpdateStatus).catch(() => {});
+    }
   };
+
+  const openNowPlayingOverlay = useCallback(() => {
+    if (!currentTrack) return;
+    if (miniCoverRef.current) {
+      setMiniCoverRect(miniCoverRef.current.getBoundingClientRect());
+    }
+    setNowPlayingOpen(true);
+  }, [currentTrack]);
 
   const runSearch = async (q = searchQuery, kind = searchKind, offset = 0) => {
     if (!q.trim()) return;
@@ -801,12 +958,15 @@ export const App: React.FC = () => {
         <SettingsPage
           settings={settings}
           sources={sources}
+          updateStatus={updateStatus}
+          checkingUpdate={checkingUpdate}
           onUpdateSettings={handleUpdateSettings}
           onRefreshSources={refreshSources}
           onOpenInstall={(p) => {
             setPendingPlugin(p || null);
             setInstallOpen(true);
           }}
+          onCheckAppUpdate={() => runAppUpdateCheck(true)}
           onToast={showToast}
           t={t}
         />
@@ -1394,7 +1554,7 @@ export const App: React.FC = () => {
             value={sourceId}
             onChange={(e) => handleUpdateSettings({ activeSource: e.target.value })}
           >
-            {sources.map((s) => (
+            {enabledSources.map((s) => (
               <option key={s.info.id} value={s.info.id}>
                 {s.info.name}
               </option>
@@ -1494,7 +1654,7 @@ export const App: React.FC = () => {
           <div className="source-picker" style={{ marginBottom: 0, flex: 1 }}>
             <Icon name="note" size={15} />
             <select value={sourceId} onChange={(e) => handleUpdateSettings({ activeSource: e.target.value })}>
-              {sources.map((s) => (
+              {enabledSources.map((s) => (
                 <option key={s.info.id} value={s.info.id}>
                   {s.info.name}
                 </option>
@@ -1513,8 +1673,12 @@ export const App: React.FC = () => {
 
       {/* Player Bar */}
       <footer className="player-bar">
-        <div className="player-left" onClick={() => currentTrack && setNowPlayingOpen(true)}>
-          <div className="player-cover">
+        <div className="player-left" onClick={openNowPlayingOverlay}>
+          <div
+            ref={miniCoverRef}
+            className="player-cover"
+            style={{ opacity: hideMiniCover ? 0 : 1, transition: "opacity 80ms ease" }}
+          >
             {currentTrack?.album?.imageUrl ? (
               <img src={imageProxyUrl(currentTrack.album.imageUrl, 128)} alt="" />
             ) : (
@@ -1545,26 +1709,22 @@ export const App: React.FC = () => {
           </div>
           <div className="scrubber-row">
             <span>{formatDuration(barPos)}</span>
-            <input
-              type="range"
-              className="scrubber"
-              min={0}
-              max={Math.max(effectiveDuration, 1)}
-              value={Math.min(barPos, effectiveDuration || 1)}
-              onChange={(e) => setScrubMs(Number(e.target.value))}
-              onMouseUp={() => {
-                if (scrubMs !== null) {
-                  handleSeek(scrubMs);
+            <div style={{ flex: 1 }}>
+              <SmokeScrubber
+                value={barPos}
+                max={effectiveDuration}
+                playing={playing}
+                buffering={buffering}
+                smokeEnabled={settings.smoke}
+                accent={palette.accent}
+                onChange={(ms) => setScrubMs(ms)}
+                onCommit={(ms) => {
                   setScrubMs(null);
-                }
-              }}
-              onTouchEnd={() => {
-                if (scrubMs !== null) {
-                  handleSeek(scrubMs);
-                  setScrubMs(null);
-                }
-              }}
-            />
+                  handleSeek(ms);
+                }}
+                compact
+              />
+            </div>
             <span>{buffering ? "..." : formatDuration(effectiveDuration)}</span>
           </div>
         </div>
@@ -1591,7 +1751,7 @@ export const App: React.FC = () => {
           >
             <Icon name="repeat" size={17} />
           </button>
-          <button className="icon-btn" onClick={() => currentTrack && setNowPlayingOpen(true)}>
+          <button className="icon-btn" onClick={openNowPlayingOverlay}>
             <Icon name="lyrics" size={18} />
           </button>
         </div>
@@ -1619,7 +1779,14 @@ export const App: React.FC = () => {
 
       <NowPlaying
         open={nowPlayingOpen}
-        onClose={() => setNowPlayingOpen(false)}
+        onClose={() => {
+          if (miniCoverRef.current) {
+            setMiniCoverRect(miniCoverRef.current.getBoundingClientRect());
+          }
+          setNowPlayingOpen(false);
+        }}
+        onAnimatingChange={setHideMiniCover}
+        miniCoverRect={miniCoverRect}
         track={currentTrack}
         queue={queue}
         index={queueIndex}
@@ -1635,6 +1802,9 @@ export const App: React.FC = () => {
         canComments={!!currentSourceObj?.capabilities.comments}
         canPostComment={!!currentSourceObj?.capabilities.postComment}
         canLikeComment={!!currentSourceObj?.capabilities.likeComment}
+        settings={settings}
+        palette={palette}
+        onUpdateSettings={handleUpdateSettings}
         onTogglePlay={handleTogglePlay}
         onPrev={handlePrev}
         onNext={handleNext}
@@ -1647,6 +1817,22 @@ export const App: React.FC = () => {
         onToggleShuffle={() => setShuffle((s) => !s)}
         onCycleRepeat={() => setRepeatMode((r) => (r === "off" ? "all" : r === "all" ? "one" : "off"))}
         onToast={showToast}
+        t={t}
+      />
+
+      <UpdateModal
+        release={updateModalRelease}
+        progress={updateProgress}
+        onClose={() => setUpdateModalRelease(null)}
+        onSkip={async (ver) => {
+          try {
+            const next = await api.skipAppUpdate(ver);
+            setSettings(next);
+          } catch {
+            // ignore
+          }
+          setUpdateModalRelease(null);
+        }}
         t={t}
       />
 

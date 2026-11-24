@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
+import android.provider.Settings
 import android.webkit.JavascriptInterface
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
@@ -22,6 +23,7 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.core.view.WindowCompat
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
@@ -39,7 +41,9 @@ class MainActivity : AppCompatActivity() {
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private val ioExecutor = Executors.newSingleThreadExecutor()
+    private val updateExecutor = Executors.newSingleThreadExecutor()
     private var pendingOpenedZip: String? = null
+    private var pendingInstallApk: File? = null
     private var pageReady = false
 
     private val fileChooserLauncher = registerForActivityResult(
@@ -186,6 +190,22 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        PlaybackBridge.setForeground(true)
+        pendingInstallApk?.let { apk ->
+            if (apk.exists() && packageManager.canRequestPackageInstalls()) {
+                pendingInstallApk = null
+                launchApkInstaller(apk)
+            }
+        }
+    }
+
+    override fun onPause() {
+        PlaybackBridge.setForeground(false)
+        super.onPause()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleIncomingIntent(intent)
@@ -246,6 +266,97 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun downloadAndInstallApk(downloadUrl: String, version: String) {
+        updateExecutor.execute {
+            try {
+                sendEventToWeb(
+                    "updateDownloadProgress",
+                    JSONObject().put("state", "downloading").put("percent", 0)
+                )
+                val updatesDir = File(cacheDir, "updates").apply { mkdirs() }
+                val safeVer = version.replace(Regex("[^0-9A-Za-z._-]"), "_")
+                val dest = File(updatesDir, "mygo-music-$safeVer.apk")
+                val tmp = File(updatesDir, "mygo-music-$safeVer.apk.part")
+
+                val conn = (URL(downloadUrl).openConnection() as HttpURLConnection).apply {
+                    instanceFollowRedirects = true
+                    connectTimeout = 20_000
+                    readTimeout = 60_000
+                }
+                val code = conn.responseCode
+                if (code !in 200..299) {
+                    conn.disconnect()
+                    throw IllegalStateException("HTTP $code")
+                }
+                val total = conn.contentLengthLong
+                var downloaded = 0L
+                var lastPct = -1
+                conn.inputStream.use { input ->
+                    tmp.outputStream().use { output ->
+                        val buf = ByteArray(16 * 1024)
+                        while (true) {
+                            val n = input.read(buf)
+                            if (n <= 0) break
+                            output.write(buf, 0, n)
+                            downloaded += n
+                            if (total > 0) {
+                                val pct = ((downloaded * 100L) / total).toInt().coerceIn(0, 100)
+                                if (pct != lastPct) {
+                                    lastPct = pct
+                                    sendEventToWeb(
+                                        "updateDownloadProgress",
+                                        JSONObject()
+                                            .put("state", "downloading")
+                                            .put("percent", pct)
+                                            .put("downloadedBytes", downloaded)
+                                            .put("totalBytes", total)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                conn.disconnect()
+                if (dest.exists()) dest.delete()
+                if (!tmp.renameTo(dest)) {
+                    tmp.copyTo(dest, overwrite = true)
+                    tmp.delete()
+                }
+                sendEventToWeb(
+                    "updateDownloadProgress",
+                    JSONObject().put("state", "ready").put("percent", 100)
+                )
+                runOnUiThread {
+                    if (!packageManager.canRequestPackageInstalls()) {
+                        pendingInstallApk = dest
+                        Toast.makeText(this, "请允许安装未知来源应用以完成更新", Toast.LENGTH_LONG).show()
+                        val settingsIntent = Intent(
+                            Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                            Uri.parse("package:$packageName")
+                        )
+                        startActivity(settingsIntent)
+                    } else {
+                        launchApkInstaller(dest)
+                    }
+                }
+            } catch (e: Throwable) {
+                sendEventToWeb(
+                    "updateDownloadProgress",
+                    JSONObject().put("state", "error").put("error", e.message ?: "Download failed")
+                )
+            }
+        }
+    }
+
+    private fun launchApkInstaller(apk: File) {
+        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", apk)
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(intent)
+    }
+
     private inner class NativeJsBridge {
         @JavascriptInterface
         fun postMessage(rawJson: String) {
@@ -265,7 +376,8 @@ class MainActivity : AppCompatActivity() {
                             album = payload.optString("album"),
                             artworkUrl = payload.optString("artworkUrl"),
                             durationMs = payload.optLong("durationMs", 0L),
-                            autoplay = payload.optBoolean("autoplay", true)
+                            autoplay = payload.optBoolean("autoplay", true),
+                            normGain = payload.optDouble("normGain", 1.0).toFloat()
                         )
                     )
                 }
@@ -273,6 +385,16 @@ class MainActivity : AppCompatActivity() {
                 "playerPlay" -> PlaybackBridge.play()
                 "playerPause" -> PlaybackBridge.pause()
                 "playerSeek" -> PlaybackBridge.seek(payload.optLong("positionMs", 0L))
+                "playerSetGain" -> PlaybackBridge.setGain(payload.optDouble("gain", 1.0).toFloat())
+                "playerSetMetering" -> PlaybackBridge.setMetering(payload.optBoolean("enabled", false))
+
+                "downloadAndInstallUpdate" -> {
+                    val url = payload.optString("url")
+                    val ver = payload.optString("version", "latest")
+                    if (url.isNotBlank()) {
+                        downloadAndInstallApk(url, ver)
+                    }
+                }
 
                 "openExternal" -> {
                     val url = payload.optString("url")

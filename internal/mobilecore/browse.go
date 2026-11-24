@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"mygo-music/internal/lyrics"
 	"mygo-music/internal/music"
@@ -82,9 +83,15 @@ type parsedLyricLine struct {
 	Words       []parsedLyricWord `json:"words,omitempty"`
 }
 
+type parsedQuietSpan struct {
+	FromMs int64 `json:"fromMs"`
+	ToMs   int64 `json:"toMs"`
+}
+
 type parsedLyricsResponse struct {
-	Lang  string            `json:"lang,omitempty"`
-	Lines []parsedLyricLine `json:"lines"`
+	Lang   string            `json:"lang,omitempty"`
+	Lines  []parsedLyricLine `json:"lines"`
+	Quiets []parsedQuietSpan `json:"quiets,omitempty"`
 }
 
 func (s *Server) handleSourceRoute(w http.ResponseWriter, r *http.Request) {
@@ -347,6 +354,17 @@ func (s *Server) handleSourceRoute(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		lines := lyrics.FromSource(raw)
+		durMs := int64(queryInt(r, "durationMs", 0))
+		if durMs <= 0 && len(lines) > 0 {
+			for _, l := range lines {
+				if e := l.End.Milliseconds(); e > durMs {
+					durMs = e
+				}
+				if a := l.At.Milliseconds(); a > durMs {
+					durMs = a
+				}
+			}
+		}
 		resp := parsedLyricsResponse{
 			Lang:  lyrics.Lang(lines),
 			Lines: make([]parsedLyricLine, 0, len(lines)),
@@ -367,6 +385,14 @@ func (s *Server) handleSourceRoute(w http.ResponseWriter, r *http.Request) {
 				})
 			}
 			resp.Lines = append(resp.Lines, pl)
+		}
+		if durMs > 0 {
+			for _, q := range lyrics.Quiets(lines, time.Duration(durMs)*time.Millisecond, 8*time.Second) {
+				resp.Quiets = append(resp.Quiets, parsedQuietSpan{
+					FromMs: q.From.Milliseconds(),
+					ToMs:   q.To.Milliseconds(),
+				})
+			}
 		}
 		writeJSON(w, http.StatusOK, resp)
 

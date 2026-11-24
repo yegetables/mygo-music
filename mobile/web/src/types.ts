@@ -129,6 +129,7 @@ export interface SourceSummary {
   info: SourceInfo;
   builtin: boolean;
   active: boolean;
+  disabled?: boolean;
   capabilities: Record<string, boolean>;
   settings: Record<string, string>;
   origin?: { repo: string; version: string };
@@ -154,12 +155,30 @@ export interface PendingPlugin {
   processWarning?: boolean;
 }
 
+export type PlayerStyle = "" | "vinyl" | "cassette";
+export type StageStyle = "" | "partita" | "tilt";
+export type UpdateChannel = "fork" | "official";
+
 export interface MobileSettings {
   activeSource: string;
   quality: string;
   language: string;
   theme: string;
   cacheLimitMB: number;
+  playerStyle: PlayerStyle;
+  hotComments: boolean;
+  normalize: boolean;
+  smoke: boolean;
+  fog: boolean;
+  growFromCover: boolean;
+  lyricsStage: boolean;
+  stageStyle: StageStyle;
+  stageSparks: boolean;
+  disabledPlugins?: string[];
+  updateChannel: UpdateChannel;
+  autoCheckUpdates: boolean;
+  lastUpdateCheck?: string;
+  skippedVersion?: string;
 }
 
 export interface SessionState {
@@ -188,9 +207,15 @@ export interface LyricLine {
   words?: LyricWord[];
 }
 
+export interface QuietSpan {
+  fromMs: number;
+  toMs: number;
+}
+
 export interface ParsedLyrics {
   lang?: string;
   lines: LyricLine[];
+  quiets?: QuietSpan[];
 }
 
 export interface Comment {
@@ -223,6 +248,74 @@ export interface CacheStats {
   coversBytes: number;
   totalBytes: number;
   limitMB: number;
+}
+
+export interface RGBColor {
+  r: number;
+  g: number;
+  b: number;
+}
+
+export interface CoverPalette {
+  tint: RGBColor;
+  accent: RGBColor;
+  deep: RGBColor;
+  fog: RGBColor;
+}
+
+export interface StreamInfo {
+  streamUrl: string;
+  type: string;
+  quality: string;
+  bitRate: number;
+  size: number;
+  cached: boolean;
+  gain?: number;
+  peak?: number;
+  normGain?: number;
+}
+
+export interface UpdateChannelInfo {
+  id: UpdateChannel;
+  repo: string;
+  supported: boolean;
+  reason?: string;
+}
+
+export interface UpdateRelease {
+  channel: UpdateChannel;
+  repo: string;
+  currentVersion: string;
+  latestVersion: string;
+  hasUpdate: boolean;
+  skipped: boolean;
+  notes?: string;
+  releaseUrl?: string;
+  assetName?: string;
+  downloadUrl?: string;
+  assetSize?: number;
+  publishedAt?: string;
+  checkedAt: string;
+  canDirectInstall: boolean;
+}
+
+export interface UpdateStatus {
+  currentVersion: string;
+  platform: string;
+  channel: UpdateChannel;
+  channels: UpdateChannelInfo[];
+  autoCheckUpdates: boolean;
+  lastUpdateCheck?: string;
+  skippedVersion?: string;
+  latest?: UpdateRelease | null;
+}
+
+export interface UpdateDownloadProgress {
+  state: "downloading" | "ready" | "error";
+  percent?: number;
+  downloadedBytes?: number;
+  totalBytes?: number;
+  error?: string;
 }
 
 export interface WebSignInPayload {

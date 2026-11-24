@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"mygo-music/internal/music"
 	"mygo-music/internal/plugin"
 )
 
@@ -307,5 +308,121 @@ func TestRealNetEasePluginLoadsIfBuilt(t *testing.T) {
 	}
 	if summary.Info.ID != "netease-cloud-music" || !summary.Capabilities["search"] || !summary.Capabilities["stream"] || !summary.Capabilities["signIn"] {
 		t.Fatalf("unexpected netease summary: %+v", summary)
+	}
+}
+
+// Verifies extended desktop-parity settings persist across restarts and cache limit 0 disables disk caching.
+func TestSettingsParityAndZeroCache(t *testing.T) {
+	dataDir := t.TempDir()
+	cacheDir := t.TempDir()
+	srv, err := Start(Options{DataDir: dataDir, CacheDir: cacheDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Stop()
+
+	st := srv.state.Settings()
+	if !st.Normalize || st.UpdateChannel != UpdateChannelFork || !st.AutoCheckUpdates || st.CacheLimitMB != 2048 {
+		t.Fatalf("unexpected default settings: %+v", st)
+	}
+
+	body := `{"playerStyle":"vinyl","hotComments":true,"normalize":false,"smoke":true,"fog":true,"growFromCover":true,"lyricsStage":true,"stageStyle":"partita","stageSparks":true,"cacheLimitMB":0,"updateChannel":"fork","platform":"ios"}`
+	req, _ := http.NewRequest(http.MethodPost, "http://"+srv.Addr+"/api/settings", strings.NewReader(body))
+	req.Header.Set("X-MyGo-Token", srv.Token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var updated Settings
+	if err := json.NewDecoder(resp.Body).Decode(&updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.PlayerStyle != "vinyl" || !updated.HotComments || updated.Normalize || !updated.Smoke || !updated.Fog || !updated.GrowFromCover || !updated.LyricsStage || updated.StageStyle != "partita" || !updated.StageSparks || updated.CacheLimitMB != 0 {
+		t.Fatalf("settings did not persist expected fields: %+v", updated)
+	}
+
+	// Switching to official upstream on unsupported mobile platforms must be rejected.
+	badReq, _ := http.NewRequest(http.MethodPost, "http://"+srv.Addr+"/api/settings", strings.NewReader(`{"updateChannel":"official","platform":"ios"}`))
+	badReq.Header.Set("X-MyGo-Token", srv.Token)
+	badResp, err := http.DefaultClient.Do(badReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	badResp.Body.Close()
+	if badResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 when selecting official channel on ios, got %d", badResp.StatusCode)
+	}
+}
+
+// Verifies loudness normalization formula matches desktop MyGo Music including peak clipping protection.
+func TestNormGainFormula(t *testing.T) {
+	if g := normGain(&music.Stream{}); g != 1.0 {
+		t.Fatalf("expected 1.0 for unmeasured track, got %v", g)
+	}
+	// +0 dB gain + 4 dB preamp = +4 dB -> ~1.5849, capped at 1/0.8 = 1.25.
+	g := normGain(&music.Stream{Gain: 0, Peak: 0.8})
+	if g < 1.249 || g > 1.251 {
+		t.Fatalf("expected peak-capped gain 1.25, got %v", g)
+	}
+	// -10 dB gain + 4 dB preamp = -6 dB -> ~0.5012.
+	g2 := normGain(&music.Stream{Gain: -10, Peak: 1.0})
+	if g2 < 0.50 || g2 > 0.503 {
+		t.Fatalf("expected ~0.5012, got %v", g2)
+	}
+}
+
+// Verifies app updater channel availability, SemVer comparison, and platform asset selection.
+func TestAppUpdaterForkChannelAndPlatformSupport(t *testing.T) {
+	iosCh := ChannelsForPlatform("ios")
+	if len(iosCh) != 2 || !iosCh[0].Supported || iosCh[0].ID != UpdateChannelFork || iosCh[1].Supported || iosCh[1].ID != UpdateChannelOfficial {
+		t.Fatalf("unexpected ios channels: %+v", iosCh)
+	}
+	desktopCh := ChannelsForPlatform("darwin")
+	if !desktopCh[0].Supported || !desktopCh[1].Supported {
+		t.Fatalf("expected both channels supported on desktop: %+v", desktopCh)
+	}
+
+	fakeGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/yegetables/mygo-music/releases/latest" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"tag_name": "v9.9.9",
+			"body":     "Mobile release notes",
+			"html_url": "https://github.com/yegetables/mygo-music/releases/tag/v9.9.9",
+			"assets": []map[string]any{
+				{"name": "MyGoMusic-v9.9.9-Android12-arm64.apk", "size": 19000000, "browser_download_url": "https://example.com/app.apk"},
+				{"name": "MyGoMusic-v9.9.9-iPadOS17-arm64.ipa", "size": 6500000, "browser_download_url": "https://example.com/app.ipa"},
+			},
+		})
+	}))
+	defer fakeGH.Close()
+
+	srv, err := Start(Options{DataDir: t.TempDir(), CacheDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Stop()
+	srv.updater.apiBase = fakeGH.URL
+
+	androidRel, err := srv.updater.Check("android")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !androidRel.HasUpdate || androidRel.Latest != "9.9.9" || !androidRel.CanDirectLoad || androidRel.AssetName != "MyGoMusic-v9.9.9-Android12-arm64.apk" {
+		t.Fatalf("unexpected android release: %+v", androidRel)
+	}
+
+	iosRel, err := srv.updater.Check("ios")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !iosRel.HasUpdate || iosRel.CanDirectLoad || iosRel.AssetName != "MyGoMusic-v9.9.9-iPadOS17-arm64.ipa" {
+		t.Fatalf("unexpected ios release: %+v", iosRel)
 	}
 }

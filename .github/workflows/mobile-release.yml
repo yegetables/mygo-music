@@ -1,0 +1,100 @@
+name: Mobile Release Assets
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to attach mobile IPA/APK assets to (defaults to v<mygo.config.ts version>)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.ver.outputs.tag }}
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Resolve version and ensure release exists
+        id: ver
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then
+            tag="$INPUT_TAG"
+          elif [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            v="$(sed -n 's/.*version: "\([^"]*\)".*/\1/p' mygo.config.ts | head -n 1)"
+            tag="v${v}"
+          fi
+          version="${tag#v}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --draft --title "$tag" --generate-notes
+          fi
+
+  ios-ipa:
+    needs: resolve
+    name: Build & Upload iPadOS 17+ IPA
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Build IPA
+        env:
+          APP_VERSION: ${{ needs.resolve.outputs.version }}
+        run: bash mobile/ios/build-ios.sh
+      - name: Upload IPA to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          VER: ${{ needs.resolve.outputs.version }}
+        run: |
+          gh release upload "$TAG" "mobile/ios/build/MyGoMusic-v${VER}-iPadOS17-arm64.ipa" --clobber --repo "$GITHUB_REPOSITORY"
+
+  android-apk:
+    needs: resolve
+    name: Build & Upload Android 12+ APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+      - name: Install Android NDK 28
+        run: sdkmanager "ndk;28.2.13676358" "platforms;android-35" "build-tools;35.0.0"
+      - name: Build APK
+        env:
+          APP_VERSION: ${{ needs.resolve.outputs.version }}
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
+        run: bash mobile/android/build-android.sh
+      - name: Upload APK to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          VER: ${{ needs.resolve.outputs.version }}
+        run: |
+          cp mobile/android/app/build/outputs/apk/release/app-release.apk "MyGoMusic-v${VER}-Android12-arm64.apk"
+          gh release upload "$TAG" "MyGoMusic-v${VER}-Android12-arm64.apk" --clobber --repo "$GITHUB_REPOSITORY"

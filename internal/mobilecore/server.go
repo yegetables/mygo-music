@@ -45,6 +45,7 @@ type Server struct {
 	sources *sourceManager
 	auth    *authManager
 	media   *mediaProxy
+	updater *appUpdater
 	webFS   fs.FS
 
 	httpSrv  *http.Server
@@ -80,6 +81,7 @@ func Start(opts Options) (*Server, error) {
 	s.media = newMediaProxy(opts.CacheDir, s.sources, func() int {
 		return s.state.Settings().CacheLimitMB
 	})
+	s.updater = newAppUpdater(s.state)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/", s.withAuth(s.handleAPI))
@@ -190,16 +192,61 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		if r.Method == http.MethodPost {
 			var patch struct {
-				ActiveSource *string `json:"activeSource"`
-				Quality      *string `json:"quality"`
-				Language     *string `json:"language"`
-				Theme        *string `json:"theme"`
-				CacheLimitMB *int    `json:"cacheLimitMB"`
+				ActiveSource     *string  `json:"activeSource"`
+				Quality          *string  `json:"quality"`
+				Language         *string  `json:"language"`
+				Theme            *string  `json:"theme"`
+				CacheLimitMB     *int     `json:"cacheLimitMB"`
+				PlayerStyle      *string  `json:"playerStyle"`
+				HotComments      *bool    `json:"hotComments"`
+				Normalize        *bool    `json:"normalize"`
+				Smoke            *bool    `json:"smoke"`
+				Fog              *bool    `json:"fog"`
+				GrowFromCover    *bool    `json:"growFromCover"`
+				LyricsStage      *bool    `json:"lyricsStage"`
+				StageStyle       *string  `json:"stageStyle"`
+				StageSparks      *bool    `json:"stageSparks"`
+				DisabledPlugins  []string `json:"disabledPlugins"`
+				HasDisabled      bool     `json:"-"`
+				UpdateChannel    *string  `json:"updateChannel"`
+				AutoCheckUpdates *bool    `json:"autoCheckUpdates"`
+				Platform         *string  `json:"platform"`
 			}
-			if err := decodeBody(r, &patch); err != nil {
+			var rawMap map[string]json.RawMessage
+			if err := decodeBody(r, &rawMap); err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
+			rawBytes, _ := json.Marshal(rawMap)
+			if err := json.Unmarshal(rawBytes, &patch); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			_, patch.HasDisabled = rawMap["disabledPlugins"]
+
+			// Reject selecting an unsupported update channel on mobile platforms.
+			if patch.UpdateChannel != nil {
+				plat := r.URL.Query().Get("platform")
+				if patch.Platform != nil && *patch.Platform != "" {
+					plat = *patch.Platform
+				}
+				if plat != "" {
+					wanted := sanitizeUpdateChannel(*patch.UpdateChannel)
+					supported := false
+					for _, ch := range ChannelsForPlatform(plat) {
+						if ch.ID == wanted {
+							supported = ch.Supported
+							break
+						}
+					}
+					if !supported {
+						writeError(w, http.StatusBadRequest, errors.New("selected update channel is not supported on this platform"))
+						return
+					}
+				}
+			}
+
+			cacheChanged := false
 			updated, err := s.state.UpdateSettings(func(st *Settings) {
 				if patch.ActiveSource != nil {
 					st.ActiveSource = *patch.ActiveSource
@@ -214,12 +261,54 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 					st.Theme = *patch.Theme
 				}
 				if patch.CacheLimitMB != nil {
+					if *patch.CacheLimitMB != st.CacheLimitMB {
+						cacheChanged = true
+					}
 					st.CacheLimitMB = *patch.CacheLimitMB
+				}
+				if patch.PlayerStyle != nil {
+					st.PlayerStyle = *patch.PlayerStyle
+				}
+				if patch.HotComments != nil {
+					st.HotComments = *patch.HotComments
+				}
+				if patch.Normalize != nil {
+					st.Normalize = *patch.Normalize
+				}
+				if patch.Smoke != nil {
+					st.Smoke = *patch.Smoke
+				}
+				if patch.Fog != nil {
+					st.Fog = *patch.Fog
+				}
+				if patch.GrowFromCover != nil {
+					st.GrowFromCover = *patch.GrowFromCover
+				}
+				if patch.LyricsStage != nil {
+					st.LyricsStage = *patch.LyricsStage
+				}
+				if patch.StageStyle != nil {
+					st.StageStyle = *patch.StageStyle
+				}
+				if patch.StageSparks != nil {
+					st.StageSparks = *patch.StageSparks
+				}
+				if patch.HasDisabled {
+					st.DisabledPlugins = patch.DisabledPlugins
+				}
+				if patch.UpdateChannel != nil {
+					st.UpdateChannel = *patch.UpdateChannel
+				}
+				if patch.AutoCheckUpdates != nil {
+					st.AutoCheckUpdates = *patch.AutoCheckUpdates
 				}
 			})
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, err)
 				return
+			}
+			if cacheChanged {
+				go s.media.enforceCacheLimit()
 			}
 			writeJSON(w, http.StatusOK, updated)
 			return
@@ -247,10 +336,10 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, errors.New("GET or POST required"))
 
 	case p == "/api/sources":
-		active := s.state.Settings().ActiveSource
+		st := s.state.Settings()
 		writeJSON(w, http.StatusOK, map[string]any{
-			"activeSource": active,
-			"sources":      s.sources.List(active),
+			"activeSource": st.ActiveSource,
+			"sources":      s.sources.List(st.ActiveSource, st.DisabledPlugins),
 		})
 
 	case strings.HasPrefix(p, "/api/sources/"):
@@ -484,6 +573,47 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 
 	case p == "/api/image":
 		s.media.handleImage(w, r)
+
+	case p == "/api/image/palette":
+		s.media.handleImagePalette(w, r)
+
+	case p == "/api/update/status":
+		writeJSON(w, http.StatusOK, s.updater.Status(r.URL.Query().Get("platform")))
+
+	case p == "/api/update/check":
+		plat := r.URL.Query().Get("platform")
+		if r.Method == http.MethodPost {
+			var body struct {
+				Platform string `json:"platform"`
+			}
+			_ = decodeBody(r, &body)
+			if body.Platform != "" {
+				plat = body.Platform
+			}
+		}
+		res, err := s.updater.Check(plat)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, res)
+
+	case p == "/api/update/skip":
+		var body struct {
+			Version string `json:"version"`
+		}
+		if err := decodeBody(r, &body); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		updated, err := s.state.UpdateSettings(func(st *Settings) {
+			st.SkippedVersion = strings.TrimPrefix(strings.TrimSpace(body.Version), "v")
+		})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, updated)
 
 	case p == "/api/cache/stats":
 		writeJSON(w, http.StatusOK, s.media.Stats())

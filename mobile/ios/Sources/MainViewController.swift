@@ -126,7 +126,8 @@ final class MainViewController: UIViewController, WKScriptMessageHandler, WKNavi
                 album: payload["album"] as? String ?? "",
                 artworkUrl: payload["artworkUrl"] as? String ?? "",
                 durationMs: (payload["durationMs"] as? NSNumber)?.doubleValue ?? 0,
-                autoplay: (payload["autoplay"] as? Bool) ?? true
+                autoplay: (payload["autoplay"] as? Bool) ?? true,
+                normGain: (payload["normGain"] as? NSNumber)?.doubleValue ?? 1.0
             )
         case "playerPlay":
             AudioEngine.shared.play()
@@ -135,7 +136,13 @@ final class MainViewController: UIViewController, WKScriptMessageHandler, WKNavi
         case "playerSeek":
             let ms = (payload["positionMs"] as? NSNumber)?.int64Value ?? 0
             AudioEngine.shared.seek(positionMs: ms)
-        case "openExternal":
+        case "playerSetGain":
+            let gain = (payload["gain"] as? NSNumber)?.doubleValue ?? 1.0
+            AudioEngine.shared.setGain(gain)
+        case "playerSetMetering":
+            let enabled = (payload["enabled"] as? Bool) ?? false
+            AudioEngine.shared.setMetering(enabled: enabled)
+        case "downloadAndInstallUpdate", "openExternal":
             if let raw = payload["url"] as? String, let url = URL(string: raw) {
                 UIApplication.shared.open(url)
             }

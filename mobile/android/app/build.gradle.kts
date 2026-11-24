@@ -12,8 +12,10 @@ android {
         applicationId = "dev.egoist.music"
         minSdk = 31
         targetSdk = 35
-        versionCode = 25
-        versionName = "0.1.25"
+        val verName = (project.findProperty("appVersion") as String?)?.ifBlank { null } ?: "0.1.25"
+        val verParts = verName.split(".").mapNotNull { it.toIntOrNull() }
+        versionCode = if (verParts.size >= 3) verParts[0] * 10000 + verParts[1] * 100 + verParts[2] else 25
+        versionName = verName
 
         ndk {
             abiFilters += listOf("arm64-v8a")

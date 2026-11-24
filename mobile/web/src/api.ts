@@ -7,6 +7,7 @@ import type {
   CacheStats,
   Comment,
   CommentPage,
+  CoverPalette,
   MobileSettings,
   ParsedLyrics,
   PendingPlugin,
@@ -17,7 +18,10 @@ import type {
   ShowPage,
   SourceSummary,
   Station,
+  StreamInfo,
   Track,
+  UpdateRelease,
+  UpdateStatus,
   WebSignInPayload,
 } from "./types";
 
@@ -121,7 +125,10 @@ async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
 export const api = {
   getSettings: () => req<MobileSettings>("/api/settings"),
   updateSettings: (patch: Partial<MobileSettings>) =>
-    req<MobileSettings>("/api/settings", { method: "POST", body: JSON.stringify(patch) }),
+    req<MobileSettings>(`/api/settings?platform=${encodeURIComponent(PLATFORM)}`, {
+      method: "POST",
+      body: JSON.stringify({ ...patch, platform: PLATFORM }),
+    }),
 
   getSession: () => req<SessionState>("/api/session"),
   saveSession: (sess: SessionState) =>
@@ -182,8 +189,12 @@ export const api = {
       body: JSON.stringify({ id }),
     }),
 
-  lyrics: (source: string, id: string) =>
-    req<ParsedLyrics>(`/api/sources/${encodeURIComponent(source)}/lyrics?id=${encodeURIComponent(id)}`),
+  lyrics: (source: string, id: string, durationMs = 0) =>
+    req<ParsedLyrics>(
+      `/api/sources/${encodeURIComponent(source)}/lyrics?id=${encodeURIComponent(id)}${
+        durationMs > 0 ? `&durationMs=${Math.round(durationMs)}` : ""
+      }`
+    ),
   comments: (source: string, trackId: string, offset = 0) =>
     req<CommentPage>(
       `/api/sources/${encodeURIComponent(source)}/comments?trackId=${encodeURIComponent(trackId)}&offset=${offset}`
@@ -263,10 +274,23 @@ export const api = {
       quality,
       transcodeOgg: PLATFORM === "ios" ? "1" : "0",
     });
-    return req<{ streamUrl: string; type: string; quality: string; bitRate: number; size: number; cached: boolean }>(
-      `/api/stream/info?${q.toString()}`
-    );
+    return req<StreamInfo>(`/api/stream/info?${q.toString()}`);
   },
+
+  imagePalette: (rawUrl: string) =>
+    req<CoverPalette>(`/api/image/palette?url=${encodeURIComponent(rawUrl)}`),
+
+  updateStatus: () => req<UpdateStatus>(`/api/update/status?platform=${encodeURIComponent(PLATFORM)}`),
+  checkAppUpdate: () =>
+    req<UpdateRelease>(`/api/update/check?platform=${encodeURIComponent(PLATFORM)}`, {
+      method: "POST",
+      body: JSON.stringify({ platform: PLATFORM }),
+    }),
+  skipAppUpdate: (version: string) =>
+    req<MobileSettings>("/api/update/skip", {
+      method: "POST",
+      body: JSON.stringify({ version }),
+    }),
 
   preparePluginGitHub: (repo: string) =>
     req<PendingPlugin>("/api/plugins/prepare/github", { method: "POST", body: JSON.stringify({ repo }) }),

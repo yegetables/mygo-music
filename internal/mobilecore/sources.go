@@ -42,6 +42,7 @@ type SourceSummary struct {
 	Info         music.Info          `json:"info"`
 	Builtin      bool                `json:"builtin"`
 	Active       bool                `json:"active"`
+	Disabled     bool                `json:"disabled,omitempty"`
 	Capabilities map[string]bool     `json:"capabilities"`
 	Settings     map[string]string   `json:"settings"`
 	Origin       *plugin.Origin      `json:"origin,omitempty"`
@@ -183,7 +184,7 @@ func (sm *sourceManager) GetPlugin(id string) (*plugin.Plugin, bool) {
 	return p, ok
 }
 
-func (sm *sourceManager) List(activeID string) []SourceSummary {
+func (sm *sourceManager) List(activeID string, disabled []string) []SourceSummary {
 	sm.mu.RLock()
 	plugins := make([]*plugin.Plugin, 0, len(sm.plugins))
 	for _, p := range sm.plugins {
@@ -197,9 +198,13 @@ func (sm *sourceManager) List(activeID string) []SourceSummary {
 
 	out := make([]SourceSummary, 0, len(plugins)+1)
 	for _, p := range plugins {
-		out = append(out, sm.summarizePlugin(p, p.Info().ID == activeID))
+		sum := sm.summarizePlugin(p, p.Info().ID == activeID)
+		sum.Disabled = slices.Contains(disabled, p.Info().ID)
+		out = append(out, sum)
 	}
-	out = append(out, sm.summarizeLocal(activeID == "" || activeID == local.ID))
+	localSum := sm.summarizeLocal(activeID == "" || activeID == local.ID)
+	localSum.Disabled = slices.Contains(disabled, local.ID)
+	out = append(out, localSum)
 	return out
 }
 

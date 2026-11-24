@@ -69,6 +69,10 @@ export const Icon: React.FC<IconProps> = ({ name, size = 18, filled = false }) =
       return <svg {...p}><path d="m15 18-6-6 6-6" /></svg>;
     case "chevron-down":
       return <svg {...p}><path d="m6 9 6 6 6-6" /></svg>;
+    case "check":
+      return <svg {...p}><path d="M20 6 9 17l-5-5" /></svg>;
+    case "download":
+      return <svg {...p}><path d="M12 3v12m0 0-4.5-4.5M12 15l4.5-4.5M4 19h16" /></svg>;
     case "plugin":
       return <svg {...p}><path d="M12 2v5M7 7h10v4a5 5 0 0 1-10 0V7zM12 16v6" /></svg>;
     case "folder":

@@ -29,14 +29,15 @@ type cachedStreamMeta struct {
 }
 
 type mediaProxy struct {
-	songsDir    string
-	coversDir   string
-	limitMB     func() int
-	sources     *sourceManager
-	httpClient  *http.Client
-	mu          sync.Mutex
-	metaCache   map[string]cachedStreamMeta
-	downloading map[string]bool
+	songsDir     string
+	coversDir    string
+	limitMB      func() int
+	sources      *sourceManager
+	httpClient   *http.Client
+	mu           sync.Mutex
+	metaCache    map[string]cachedStreamMeta
+	downloading  map[string]bool
+	paletteCache map[string]coverPalette
 }
 
 func newMediaProxy(cacheDir string, sources *sourceManager, limitMB func() int) *mediaProxy {
@@ -52,9 +53,31 @@ func newMediaProxy(cacheDir string, sources *sourceManager, limitMB func() int) 
 		httpClient: &http.Client{
 			Timeout: 0, // streaming downloads may last minutes
 		},
-		metaCache:   map[string]cachedStreamMeta{},
-		downloading: map[string]bool{},
+		metaCache:    map[string]cachedStreamMeta{},
+		downloading:  map[string]bool{},
+		paletteCache: map[string]coverPalette{},
 	}
+}
+
+// normPreamp matches internal/player/player.go (+4 dB ReplayGain preamp).
+const normPreamp = 4.0
+
+// normGain returns the linear loudness scale factor for st matching desktop
+// MyGo Music: 10^((Gain + 4)/20), capped at 1/Peak to avoid clipping.
+func normGain(st *music.Stream) float64 {
+	if st == nil || (st.Gain == 0 && st.Peak == 0) {
+		return 1.0
+	}
+	g := math.Pow(10, (st.Gain+normPreamp)/20.0)
+	if st.Peak > 0 {
+		if ceiling := 1.0 / st.Peak; g > ceiling {
+			g = ceiling
+		}
+	}
+	if math.IsNaN(g) || math.IsInf(g, 0) || g <= 0 {
+		return 1.0
+	}
+	return g
 }
 
 func (m *mediaProxy) resolveStream(sourceID, trackID, quality string) (*music.Stream, error) {
@@ -132,6 +155,9 @@ func (m *mediaProxy) handleStreamInfo(w http.ResponseWriter, r *http.Request, to
 		"bitRate":   st.BitRate,
 		"size":      st.Size,
 		"cached":    cached,
+		"gain":      st.Gain,
+		"peak":      st.Peak,
+		"normGain":  normGain(st),
 	})
 }
 
@@ -191,8 +217,10 @@ func (m *mediaProxy) handleStreamAudio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Case 4: Live stream proxy with Range forwarding + async background cache fill.
-	m.startBackgroundCache(st, cachePath)
+	// Case 4: Live stream proxy with Range forwarding + async background cache fill (when enabled).
+	if m.limitMB() > 0 {
+		m.startBackgroundCache(st, cachePath)
+	}
 
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, st.URL, nil)
 	if err != nil {
@@ -454,11 +482,65 @@ func (m *mediaProxy) handleImage(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(b)
 }
 
-func (m *mediaProxy) enforceCacheLimit() {
-	limitBytes := int64(m.limitMB()) << 20
-	if limitBytes <= 0 {
-		limitBytes = 512 << 20
+func (m *mediaProxy) loadImageBytes(rawURL string, size int) ([]byte, error) {
+	sized := music.SizedImage(rawURL, size)
+	if localPath, ok := music.PathOf(sized); ok {
+		return os.ReadFile(localPath)
 	}
+	sum := sha256.Sum256([]byte(sized))
+	cachePath := filepath.Join(m.coversDir, hex.EncodeToString(sum[:16]))
+	if b, err := os.ReadFile(cachePath); err == nil {
+		return b, nil
+	}
+	b, err := music.Fetch(sized)
+	if err != nil {
+		return nil, err
+	}
+	go func() {
+		tmp := cachePath + ".part"
+		if os.WriteFile(tmp, b, 0o644) == nil {
+			_ = os.Rename(tmp, cachePath)
+		}
+		m.enforceCoversLimit(100 << 20)
+	}()
+	return b, nil
+}
+
+func (m *mediaProxy) handleImagePalette(w http.ResponseWriter, r *http.Request) {
+	rawURL := r.URL.Query().Get("url")
+	if rawURL == "" {
+		writeJSON(w, http.StatusOK, defaultCoverPalette())
+		return
+	}
+	m.mu.Lock()
+	if cached, ok := m.paletteCache[rawURL]; ok {
+		m.mu.Unlock()
+		writeJSON(w, http.StatusOK, cached)
+		return
+	}
+	m.mu.Unlock()
+
+	b, err := m.loadImageBytes(rawURL, 128)
+	pal := defaultCoverPalette()
+	if err == nil && len(b) > 0 {
+		pal = extractPalette(b)
+		m.mu.Lock()
+		if len(m.paletteCache) > 256 {
+			clear(m.paletteCache)
+		}
+		m.paletteCache[rawURL] = pal
+		m.mu.Unlock()
+	}
+	writeJSON(w, http.StatusOK, pal)
+}
+
+func (m *mediaProxy) enforceCacheLimit() {
+	mb := m.limitMB()
+	if mb <= 0 {
+		evictDirToLimit(m.songsDir, 0)
+		return
+	}
+	limitBytes := int64(mb) << 20
 	evictDirToLimit(m.songsDir, limitBytes)
 }
 

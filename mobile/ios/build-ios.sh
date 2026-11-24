@@ -6,7 +6,9 @@ IOS_DIR="$ROOT_DIR/mobile/ios"
 WEB_DIR="$ROOT_DIR/mobile/web"
 VENDOR_DIR="$IOS_DIR/Vendor"
 BUILD_DIR="$IOS_DIR/build"
-OUT_IPA="$BUILD_DIR/MyGoMusic-v0.1.25-iPadOS17-arm64.ipa"
+APP_VERSION="${APP_VERSION:-$(sed -n 's/.*version: "\([^"]*\)".*/\1/p' "$ROOT_DIR/mygo.config.ts" | head -n 1)}"
+APP_VERSION="${APP_VERSION:-0.1.25}"
+OUT_IPA="$BUILD_DIR/MyGoMusic-v${APP_VERSION}-iPadOS17-arm64.ipa"
 
 echo "==> 1/4 Building mobile/web UI"
 (cd "$WEB_DIR" && bun install --frozen-lockfile 2>/dev/null || bun install)
@@ -23,7 +25,7 @@ GOARCH=arm64 \
 CC="$CC" \
 CGO_CFLAGS="-isysroot $SDKROOT -arch arm64 -mios-version-min=17.0" \
 CGO_LDFLAGS="-isysroot $SDKROOT -arch arm64 -mios-version-min=17.0" \
-go build -C "$ROOT_DIR" -buildmode=c-archive -ldflags="-s -w" \
+go build -C "$ROOT_DIR" -buildmode=c-archive -ldflags="-s -w -X mygo-music/internal/mobilecore.AppVersion=${APP_VERSION}" \
   -o "$VENDOR_DIR/libmygocore.a" ./mobile/bridge
 
 echo "==> 3/4 Generating Xcode project and compiling .app"
@@ -37,6 +39,7 @@ xcodebuild \
   -sdk iphoneos \
   -destination "generic/platform=iOS" \
   -derivedDataPath "$BUILD_DIR/DerivedData" \
+  MARKETING_VERSION="$APP_VERSION" \
   CODE_SIGNING_ALLOWED=NO \
   CODE_SIGNING_REQUIRED=NO \
   CODE_SIGN_IDENTITY="" \
