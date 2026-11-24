@@ -515,7 +515,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                         )}
                         {st.link && (
                           <button
-                            style={{ fontSize: 12, color: "var(--accent)", marginTop: 2 }}
+                            style={{ fontSize: 12, color: "var(--accent)", marginTop: 2, wordBreak: "break-all", textAlign: "left" }}
                             onClick={() => {
                               if (IS_NATIVE) postNative("openExternal", { url: st.link });
                               else window.open(st.link, "_blank");
@@ -553,10 +553,11 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                           ))}
                         </select>
                       ) : (
-                        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", maxWidth: "100%", flex: "1 1 160px" }}>
                           <input
                             type={st.type === "password" ? "password" : "text"}
                             className="form-input"
+                            style={{ flex: 1, minWidth: 0 }}
                             value={val}
                             onChange={(e) => setDrafts((d) => ({ ...d, [dk]: e.target.value }))}
                             onBlur={() => {

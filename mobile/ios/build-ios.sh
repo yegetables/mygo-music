@@ -6,10 +6,10 @@ IOS_DIR="$ROOT_DIR/mobile/ios"
 WEB_DIR="$ROOT_DIR/mobile/web"
 VENDOR_DIR="$IOS_DIR/Vendor"
 BUILD_DIR="$IOS_DIR/build"
-APP_VERSION="${APP_VERSION:-$(sed -n 's/.*version: "\([^"]*\)".*/\1/p' "$ROOT_DIR/mygo.config.ts" | head -n 1)}"
-APP_VERSION="${APP_VERSION:-0.1.25}"
+eval "$(bash "$ROOT_DIR/mobile/scripts/version.sh" --bump)"
 OUT_IPA="$BUILD_DIR/MyGoMusic-v${APP_VERSION}-iPadOS17-arm64.ipa"
 
+echo "==> Version: v${APP_VERSION} (MARKETING_VERSION=${BASE_VERSION}, CFBundleVersion=${VERSION_CODE})"
 echo "==> 1/4 Building mobile/web UI"
 (cd "$WEB_DIR" && bun install --frozen-lockfile 2>/dev/null || bun install)
 (cd "$WEB_DIR" && bun run build)
@@ -39,7 +39,8 @@ xcodebuild \
   -sdk iphoneos \
   -destination "generic/platform=iOS" \
   -derivedDataPath "$BUILD_DIR/DerivedData" \
-  MARKETING_VERSION="$APP_VERSION" \
+  MARKETING_VERSION="$BASE_VERSION" \
+  CURRENT_PROJECT_VERSION="$VERSION_CODE" \
   CODE_SIGNING_ALLOWED=NO \
   CODE_SIGNING_REQUIRED=NO \
   CODE_SIGN_IDENTITY="" \

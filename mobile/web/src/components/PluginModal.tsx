@@ -187,7 +187,7 @@ export const PluginInstallModal: React.FC<PluginInstallModalProps> = ({
                 </div>
               )}
               {pending.processWarning && (
-                <div style={{ fontSize: 12, color: "#fbbf24", marginTop: 8 }}>
+                <div style={{ fontSize: 12, color: "var(--warning)", marginTop: 8 }}>
                   {t("Process permission warning")}
                 </div>
               )}
@@ -204,7 +204,7 @@ export const PluginInstallModal: React.FC<PluginInstallModalProps> = ({
           </div>
         )}
 
-        {error && <div style={{ color: "#f87171", fontSize: 13, marginTop: 12 }}>{error}</div>}
+        {error && <div style={{ color: "var(--danger)", fontSize: 13, marginTop: 12 }}>{error}</div>}
       </div>
     </div>
   );

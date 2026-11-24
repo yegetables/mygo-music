@@ -67,7 +67,7 @@ func Start(opts Options) (*Server, error) {
 		opts.ListenAddr = "127.0.0.1:0"
 	}
 
-	plugin.SetAppVersion(AppVersion)
+	plugin.SetAppVersion(baseSemver(AppVersion))
 
 	s := &Server{
 		Token:   randomHex(32),

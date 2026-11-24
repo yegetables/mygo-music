@@ -120,9 +120,11 @@ export const SmokeScrubber: React.FC<SmokeScrubberProps> = ({
       if (rect.width <= 0) return;
 
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      const padTop = compact ? 30 : 42;
+      const padTop = compact ? 28 : 40;
       const padBottom = 14;
-      const padX = compact ? 24 : 36;
+      // Keep canvas horizontal padding within .np-content's 16px mobile inset so
+      // neither the screen edge nor overflow:hidden slices the glow vertically.
+      const padX = compact ? 12 : 16;
       const trackW = rect.width;
       const cw = Math.ceil(trackW + padX * 2);
       const ch = Math.ceil(rect.height + padTop + padBottom);
@@ -190,7 +192,9 @@ export const SmokeScrubber: React.FC<SmokeScrubberProps> = ({
         if (lineRandom(k, 5) > 0.6 + 0.4 * bass) continue;
 
         const f = age / life;
-        const wx = headX - age * (12 + 22 * lineRandom(k, 1));
+        // Dampen leftward drift near 0% so smoke rises gracefully instead of hitting the left edge
+        const leftRoom = Math.min(1, Math.max(0.18, (headX - padX) / 44));
+        const wx = headX - age * (12 + 22 * lineRandom(k, 1)) * leftRoom;
         const wy =
           trackY -
           age * (12 + 18 * lineRandom(k, 2)) +
@@ -209,7 +213,7 @@ export const SmokeScrubber: React.FC<SmokeScrubberProps> = ({
       }
 
       // 3. Glowing playhead & bright core
-      const glowRadius = (compact ? 11 : 14) + 10 * bass;
+      const glowRadius = (compact ? 10 : 13) + 8 * bass;
       const hg = ctx.createRadialGradient(headX, trackY, 0, headX, trackY, glowRadius);
       hg.addColorStop(0, `rgba(255, 255, 255, ${0.95 * smoking})`);
       hg.addColorStop(0.35, `rgba(${sr}, ${sg}, ${sb}, ${0.75 * smoking})`);
@@ -224,6 +228,18 @@ export const SmokeScrubber: React.FC<SmokeScrubberProps> = ({
       ctx.beginPath();
       ctx.arc(headX, trackY, coreRadius, 0, Math.PI * 2);
       ctx.fill();
+
+      // 4. Soft horizontal edge feather within outer padX margin so glow/wisps
+      // never exhibit a sharp vertical clip bar at 0% or 100%.
+      const feather = Math.max(8, padX - 4);
+      ctx.globalCompositeOperation = "destination-in";
+      const mask = ctx.createLinearGradient(0, 0, cw, 0);
+      mask.addColorStop(0, "rgba(0, 0, 0, 0)");
+      mask.addColorStop(feather / cw, "rgba(0, 0, 0, 1)");
+      mask.addColorStop(1 - feather / cw, "rgba(0, 0, 0, 1)");
+      mask.addColorStop(1, "rgba(0, 0, 0, 0)");
+      ctx.fillStyle = mask;
+      ctx.fillRect(0, 0, cw, ch);
 
       ctx.restore();
     };

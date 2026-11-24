@@ -6,6 +6,7 @@ import android.content.ComponentName
 import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -387,6 +388,20 @@ class MainActivity : AppCompatActivity() {
                 "playerSeek" -> PlaybackBridge.seek(payload.optLong("positionMs", 0L))
                 "playerSetGain" -> PlaybackBridge.setGain(payload.optDouble("gain", 1.0).toFloat())
                 "playerSetMetering" -> PlaybackBridge.setMetering(payload.optBoolean("enabled", false))
+
+                "setSystemBarStyle" -> {
+                    val darkContent = payload.optBoolean("darkContent", false)
+                    runOnUiThread {
+                        val controller = WindowCompat.getInsetsController(window, window.decorView)
+                        controller.isAppearanceLightStatusBars = darkContent
+                        controller.isAppearanceLightNavigationBars = darkContent
+                        val barColor = if (darkContent) Color.parseColor("#F6F7FA") else Color.parseColor("#0F1014")
+                        @Suppress("DEPRECATION")
+                        window.statusBarColor = barColor
+                        @Suppress("DEPRECATION")
+                        window.navigationBarColor = barColor
+                    }
+                }
 
                 "downloadAndInstallUpdate" -> {
                     val url = payload.optString("url")

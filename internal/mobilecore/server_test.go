@@ -426,3 +426,25 @@ func TestAppUpdaterForkChannelAndPlatformSupport(t *testing.T) {
 		t.Fatalf("unexpected ios release: %+v", iosRel)
 	}
 }
+
+// Verifies dev build version strings strip cleanly for plugin checks and order monotonically in the updater.
+func TestDevBuildSemverOrdering(t *testing.T) {
+	if got := baseSemver("v0.1.25-dev-0003"); got != "0.1.25" {
+		t.Fatalf("expected baseSemver 0.1.25, got %q", got)
+	}
+	cases := []struct {
+		a, b string
+		want int
+	}{
+		{"0.1.25-dev-0002", "0.1.25-dev-0001", 1},
+		{"0.1.25-dev-0001", "0.1.25", 1},
+		{"0.1.25-dev-0001", "0.1.25-dev-0001", 0},
+		{"0.1.26", "0.1.25-dev-0099", 1},
+		{"0.1.25-dev-0001", "0.1.25-dev-0010", -1},
+	}
+	for _, tc := range cases {
+		if got := compareSemver(tc.a, tc.b); got != tc.want {
+			t.Errorf("compareSemver(%q, %q) = %d, want %d", tc.a, tc.b, got, tc.want)
+		}
+	}
+}

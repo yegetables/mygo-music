@@ -13,8 +13,15 @@ android {
         minSdk = 31
         targetSdk = 35
         val verName = (project.findProperty("appVersion") as String?)?.ifBlank { null } ?: "0.1.25"
-        val verParts = verName.split(".").mapNotNull { it.toIntOrNull() }
-        versionCode = if (verParts.size >= 3) verParts[0] * 10000 + verParts[1] * 100 + verParts[2] else 25
+        val explicitCode = (project.findProperty("appVersionCode") as String?)?.toIntOrNull()
+        val baseVer = verName.removePrefix("v").substringBefore("-").substringBefore("+")
+        val verParts = baseVer.split(".").mapNotNull { it.toIntOrNull() }
+        val devBuild = Regex("""-dev[.-](\d+)""").find(verName)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+        versionCode = explicitCode ?: if (verParts.size >= 3) {
+            verParts[0] * 100_000_000 + verParts[1] * 1_000_000 + verParts[2] * 10_000 + devBuild
+        } else {
+            1_250_000 + devBuild
+        }
         versionName = verName
 
         ndk {

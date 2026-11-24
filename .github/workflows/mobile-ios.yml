@@ -13,6 +13,8 @@ on:
       - "mobile/bridge/**"
       - "mobile/web/**"
       - "mobile/ios/**"
+      - "mobile/scripts/**"
+      - "mobile/BUILD_VERSION"
       - ".github/workflows/mobile-ios.yml"
 
 permissions:

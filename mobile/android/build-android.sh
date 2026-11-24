@@ -22,9 +22,9 @@ if [ -z "$NDK_DIR" ]; then
   exit 1
 fi
 
-APP_VERSION="${APP_VERSION:-$(sed -n 's/.*version: "\([^"]*\)".*/\1/p' "$ROOT_DIR/mygo.config.ts" | head -n 1)}"
-APP_VERSION="${APP_VERSION:-0.1.25}"
+eval "$(bash "$ROOT_DIR/mobile/scripts/version.sh" --bump)"
 
+echo "==> Version: v${APP_VERSION} (versionCode=${VERSION_CODE})"
 echo "==> 1/3 Building mobile/web UI"
 (cd "$WEB_DIR" && bun install --frozen-lockfile 2>/dev/null || bun install)
 (cd "$WEB_DIR" && bun run build)
@@ -49,13 +49,16 @@ echo "==> 3/3 Building Android 12+ APK (v${APP_VERSION})"
 cd "$ANDROID_DIR"
 if command -v mise >/dev/null 2>&1 && mise ls java 2>/dev/null | grep -q "17\."; then
   JAVA_VER="$(mise ls java | awk '{print $2; exit}')"
-  mise x "java@$JAVA_VER" -- ./gradlew assembleRelease "-PappVersion=${APP_VERSION}"
+  mise x "java@$JAVA_VER" -- ./gradlew assembleRelease "-PappVersion=${APP_VERSION}" "-PappVersionCode=${VERSION_CODE}"
 else
-  ./gradlew assembleRelease "-PappVersion=${APP_VERSION}"
+  ./gradlew assembleRelease "-PappVersion=${APP_VERSION}" "-PappVersionCode=${VERSION_CODE}"
 fi
 
-APK_PATH="$ANDROID_DIR/app/build/outputs/apk/release/app-release.apk"
+APK_DIR="$ANDROID_DIR/app/build/outputs/apk/release"
+APK_PATH="$APK_DIR/app-release.apk"
 if [ ! -f "$APK_PATH" ]; then
-  APK_PATH="$ANDROID_DIR/app/build/outputs/apk/release/app-release-unsigned.apk"
+  APK_PATH="$APK_DIR/app-release-unsigned.apk"
 fi
-echo "==> Done: $APK_PATH"
+VERSIONED_APK="$APK_DIR/MyGoMusic-v${APP_VERSION}-Android12-arm64.apk"
+cp -f "$APK_PATH" "$VERSIONED_APK"
+echo "==> Done: $VERSIONED_APK (also at $APK_PATH)"

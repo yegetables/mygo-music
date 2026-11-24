@@ -96,7 +96,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({ release, progress, onC
         )}
 
         {progress?.state === "error" && (
-          <div style={{ fontSize: 12, color: "#ff6b6b", marginBottom: 12 }}>
+          <div style={{ fontSize: 12, color: "var(--danger)", marginBottom: 12 }}>
             {progress.error}
           </div>
         )}

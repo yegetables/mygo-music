@@ -284,7 +284,18 @@ func pickReleaseAsset(assets []githubReleaseAsset, platform string) *githubRelea
 	return fallback
 }
 
+// baseSemver strips any leading "v" and prerelease/build suffix (e.g. "0.1.25-dev-0001" -> "0.1.25").
+func baseSemver(v string) string {
+	v = strings.TrimSpace(v)
+	v = strings.TrimPrefix(v, "v")
+	if idx := strings.IndexAny(v, "-+"); idx >= 0 {
+		v = v[:idx]
+	}
+	return v
+}
+
 // compareSemver returns >0 when a > b, <0 when a < b, 0 when equal.
+// Supports fork dev builds such as "0.1.25-dev-0002" > "0.1.25-dev-0001" > "0.1.25".
 func compareSemver(a, b string) int {
 	pa := parseSemverParts(a)
 	pb := parseSemverParts(b)
@@ -296,20 +307,44 @@ func compareSemver(a, b string) int {
 			return -1
 		}
 	}
+	da := parseDevBuild(a)
+	db := parseDevBuild(b)
+	if da != db {
+		if da > db {
+			return 1
+		}
+		return -1
+	}
 	return 0
 }
 
 func parseSemverParts(v string) [3]int {
-	v = strings.TrimSpace(v)
-	v = strings.TrimPrefix(v, "v")
-	if idx := strings.IndexAny(v, "-+"); idx >= 0 {
-		v = v[:idx]
-	}
-	parts := strings.Split(v, ".")
+	parts := strings.Split(baseSemver(v), ".")
 	var out [3]int
 	for i := 0; i < 3 && i < len(parts); i++ {
 		n, _ := strconv.Atoi(parts[i])
 		out[i] = n
 	}
 	return out
+}
+
+func parseDevBuild(v string) int {
+	v = strings.TrimSpace(v)
+	idx := strings.Index(v, "-")
+	if idx < 0 {
+		return 0
+	}
+	suffix := strings.ToLower(v[idx+1:])
+	if plus := strings.Index(suffix, "+"); plus >= 0 {
+		suffix = suffix[:plus]
+	}
+	for _, prefix := range []string{"dev-", "dev."} {
+		if strings.HasPrefix(suffix, prefix) {
+			numStr := strings.TrimPrefix(suffix, prefix)
+			if n, err := strconv.Atoi(numStr); err == nil && n > 0 {
+				return n
+			}
+		}
+	}
+	return 0
 }

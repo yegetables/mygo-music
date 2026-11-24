@@ -383,48 +383,50 @@ export const NowPlaying: React.FC<NowPlayingProps> = ({
           onPointerMove={handleTopPointerMove}
           onPointerUp={handleTopPointerUp}
         >
-          <button className="icon-btn" style={{ color: "#fff" }} onClick={onClose} aria-label="Close">
+          <button className="icon-btn" onClick={onClose} aria-label="Close">
             <Icon name="chevron-down" size={24} />
           </button>
 
           <div className="np-pill-group">
-            {narrow && (
+            <div className="np-pill-track">
+              {narrow && (
+                <button
+                  className={`pill ${mobilePanel === "cover" ? "active" : ""}`}
+                  onClick={() => switchTab("cover")}
+                >
+                  {t("Cover")}
+                </button>
+              )}
               <button
-                className={`pill ${mobilePanel === "cover" ? "active" : ""}`}
-                onClick={() => switchTab("cover")}
+                className={`pill ${activePanel === "lyrics" ? "active" : ""}`}
+                onClick={() => switchTab("lyrics")}
               >
-                {t("Cover")}
+                {t("Lyrics")}
               </button>
-            )}
-            <button
-              className={`pill ${activePanel === "lyrics" ? "active" : ""}`}
-              onClick={() => switchTab("lyrics")}
-            >
-              {t("Lyrics")}
-            </button>
-            <button
-              className={`pill ${activePanel === "stage" ? "active" : ""}`}
-              onClick={() => switchTab("stage")}
-            >
-              {t("Stage")}
-            </button>
-            <button
-              className={`pill ${activePanel === "queue" ? "active" : ""}`}
-              onClick={() => switchTab("queue")}
-            >
-              {t("Queue")} ({queue.length})
-            </button>
-            {canComments && (
               <button
-                className={`pill ${activePanel === "comments" ? "active" : ""}`}
-                onClick={() => switchTab("comments")}
+                className={`pill ${activePanel === "stage" ? "active" : ""}`}
+                onClick={() => switchTab("stage")}
               >
-                {t("Comments")}
+                {t("Stage")}
               </button>
-            )}
+              <button
+                className={`pill ${activePanel === "queue" ? "active" : ""}`}
+                onClick={() => switchTab("queue")}
+              >
+                {narrow ? `${t("QueueShort")} ${queue.length}` : `${t("Queue")} (${queue.length})`}
+              </button>
+              {canComments && (
+                <button
+                  className={`pill ${activePanel === "comments" ? "active" : ""}`}
+                  onClick={() => switchTab("comments")}
+                >
+                  {t("Comments")}
+                </button>
+              )}
+            </div>
           </div>
 
-          <div style={{ width: 36, flexShrink: 0 }} />
+          <div className="np-topbar-spacer" aria-hidden="true" />
         </div>
 
         {isStageMode ? (
@@ -454,7 +456,7 @@ export const NowPlaying: React.FC<NowPlayingProps> = ({
             <div className="np-stage-bar" style={riseStyle(2)}>
               <div className="np-stage-scrubber-row">
                 <span className="np-time-tag">{formatDuration(displayPos)}</span>
-                <div style={{ flex: 1 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
                   <SmokeScrubber
                     value={displayPos}
                     max={effectiveDuration}
@@ -478,36 +480,37 @@ export const NowPlaying: React.FC<NowPlayingProps> = ({
                   <div ref={artHolderRef} className="np-stage-cover" style={coverMorphStyle}>
                     {art ? <img src={art} alt="" /> : <Icon name="note" size={20} />}
                   </div>
-                  <div style={{ minWidth: 0 }}>
+                  <div style={{ minWidth: 0, flex: 1 }}>
                     <div className="truncate" style={{ fontSize: 14, fontWeight: 700 }}>{track.name}</div>
-                    <div className="truncate" style={{ fontSize: 12, color: "rgba(255,255,255,0.68)" }}>
+                    <div className="truncate" style={{ fontSize: 12, color: "var(--text-2)" }}>
                       {(track.artists || []).map((a) => a.name).join(", ")}
                     </div>
                   </div>
                 </div>
 
                 <div className="np-stage-buttons">
-                  <button className="icon-btn" style={{ color: "#fff" }} onClick={onPrev}>
+                  <button className="icon-btn" onClick={onPrev} aria-label="Previous">
                     <Icon name="prev" size={22} />
                   </button>
                   <button
                     className="play-btn play-btn-sm"
                     onClick={onTogglePlay}
+                    aria-label={playing ? "Pause" : "Play"}
                   >
                     <Icon name={playing ? "pause" : "play"} size={20} />
                   </button>
-                  <button className="icon-btn" style={{ color: "#fff" }} onClick={onNext}>
+                  <button className="icon-btn" onClick={onNext} aria-label="Next">
                     <Icon name="next" size={22} />
                   </button>
                 </div>
 
-                <div style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "flex-end" }}>
-                  {qualityBadge && <span className="badge">{qualityBadge}</span>}
+                <div className="np-stage-actions">
+                  {qualityBadge && <span className="quality-badge np-stage-quality">{qualityBadge}</span>}
                   {canLike && (
                     <button
-                      className="icon-btn"
-                      style={{ color: liked ? "var(--accent)" : "#fff" }}
+                      className={`icon-btn ${liked ? "accent" : ""}`}
                       onClick={onToggleLike}
+                      aria-label="Like"
                     >
                       <Icon name="heart" size={20} filled={liked} />
                     </button>
@@ -542,12 +545,12 @@ export const NowPlaying: React.FC<NowPlayingProps> = ({
                   </div>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-                  {qualityBadge && <span className="badge">{qualityBadge}</span>}
+                  {qualityBadge && <span className="quality-badge">{qualityBadge}</span>}
                   {canLike && (
                     <button
                       className={`icon-btn ${liked ? "accent" : ""}`}
-                      style={{ color: liked ? "var(--accent)" : "#fff" }}
                       onClick={onToggleLike}
+                      aria-label="Like"
                     >
                       <Icon name="heart" size={22} filled={liked} />
                     </button>
@@ -643,15 +646,14 @@ export const NowPlaying: React.FC<NowPlayingProps> = ({
               )}
 
               {activePanel === "queue" && (
-                <div className="np-scroll">
+                <div className="np-scroll track-list">
                   {queue.map((qt, qi) => (
                     <div
                       key={`${qt.id}-${qi}`}
                       className={`track-row ${qi === index ? "playing" : ""}`}
-                      style={{ color: "#fff" }}
                       onClick={() => onSelectQueueIndex(qi)}
                     >
-                      <div className="track-art">
+                      <div className="track-thumb">
                         {qt.album?.imageUrl ? (
                           <img src={imageProxyUrl(qt.album.imageUrl, 96)} alt="" />
                         ) : (
@@ -659,14 +661,12 @@ export const NowPlaying: React.FC<NowPlayingProps> = ({
                         )}
                       </div>
                       <div className="track-meta">
-                        <div className="track-title" style={{ color: qi === index ? "var(--accent)" : "#fff" }}>
-                          {qt.name}
-                        </div>
-                        <div className="track-sub" style={{ color: "rgba(255,255,255,0.65)" }}>
+                        <div className="track-name">{qt.name}</div>
+                        <div className="track-sub">
                           {(qt.artists || []).map((a) => a.name).join(", ")}
                         </div>
                       </div>
-                      <div className="track-dur" style={{ color: "rgba(255,255,255,0.6)" }}>
+                      <div className="track-dur">
                         {formatDuration(qt.duration)}
                       </div>
                     </div>

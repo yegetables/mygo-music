@@ -31,6 +31,7 @@ const zh: Record<string, string> = {
   Tilt: "倾诉",
   Sparks: "火花",
   Queue: "播放队列",
+  QueueShort: "队列",
   Comments: "评论",
   "Top Comment": "热评",
   "View Comments": "查看评论",
@@ -129,6 +130,7 @@ const zh: Record<string, string> = {
 };
 
 const enFallback: Record<string, string> = {
+  QueueShort: "Queue",
   "Now Playing Style Help": "How the song appears in Now Playing: cover, or a spinning vinyl record or cassette",
   "Top Comments Help": "Show a song's top comments in place of lyrics during the intro, interludes, and outro",
   "Even Out Loudness Help": "Adjust each track's volume by what the source measured, so songs sound equally loud",

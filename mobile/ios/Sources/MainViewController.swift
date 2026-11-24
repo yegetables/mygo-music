@@ -5,9 +5,10 @@ final class MainViewController: UIViewController, WKScriptMessageHandler, WKNavi
     private var webView: WKWebView!
     private var pageReady = false
     private var pendingOpenedZip: String?
+    private var statusBarDarkContent = false
 
     override var preferredStatusBarStyle: UIStatusBarStyle {
-        return .lightContent
+        return statusBarDarkContent ? .darkContent : .lightContent
     }
 
     override func viewDidLoad() {
@@ -142,6 +143,19 @@ final class MainViewController: UIViewController, WKScriptMessageHandler, WKNavi
         case "playerSetMetering":
             let enabled = (payload["enabled"] as? Bool) ?? false
             AudioEngine.shared.setMetering(enabled: enabled)
+        case "setSystemBarStyle":
+            let darkContent = (payload["darkContent"] as? Bool) ?? false
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.statusBarDarkContent = darkContent
+                let bg = darkContent
+                    ? UIColor(red: 0.965, green: 0.969, blue: 0.980, alpha: 1.0)
+                    : UIColor(red: 0.059, green: 0.063, blue: 0.078, alpha: 1.0)
+                self.view.backgroundColor = bg
+                self.webView?.backgroundColor = bg
+                self.webView?.scrollView.backgroundColor = bg
+                self.setNeedsStatusBarAppearanceUpdate()
+            }
         case "downloadAndInstallUpdate", "openExternal":
             if let raw = payload["url"] as? String, let url = URL(string: raw) {
                 UIApplication.shared.open(url)

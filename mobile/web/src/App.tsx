@@ -182,7 +182,7 @@ export const App: React.FC = () => {
     setTimeout(() => setToast((cur) => (cur === msg ? "" : cur)), 2800);
   }, []);
 
-  // Theme application
+  // Theme application + native system bar sync (status bar icons adapt to light theme vs dark/NowPlaying)
   useEffect(() => {
     const apply = () => {
       let resolved = settings.theme;
@@ -190,12 +190,15 @@ export const App: React.FC = () => {
         resolved = window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
       }
       document.documentElement.setAttribute("data-theme", resolved);
+      if (IS_NATIVE) {
+        postNative("setSystemBarStyle", { darkContent: resolved === "light" && !nowPlayingOpen });
+      }
     };
     apply();
     const mq = window.matchMedia("(prefers-color-scheme: light)");
     mq.addEventListener("change", apply);
     return () => mq.removeEventListener("change", apply);
-  }, [settings.theme]);
+  }, [settings.theme, nowPlayingOpen]);
 
   // Initial load: settings, sources, saved session
   const refreshSources = useCallback(async () => {
@@ -1709,7 +1712,7 @@ export const App: React.FC = () => {
           </div>
           <div className="scrubber-row">
             <span>{formatDuration(barPos)}</span>
-            <div style={{ flex: 1 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
               <SmokeScrubber
                 value={barPos}
                 max={effectiveDuration}
@@ -1730,7 +1733,7 @@ export const App: React.FC = () => {
         </div>
 
         <div className="player-right">
-          {qualityBadge && <span className="badge">{qualityBadge}</span>}
+          {qualityBadge && <span className="quality-badge">{qualityBadge}</span>}
           {currentTrack && currentSourceObj?.capabilities.like && (
             <button
               className={`icon-btn ${likedMap[currentTrack.id] ? "accent" : ""}`}
