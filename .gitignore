@@ -3,3 +3,16 @@
 mygo_windows_*.syso
 /mygo-music
 /node_modules/
+.bak/
+mobile/web/node_modules/
+mobile/bridge/webdist/*
+!mobile/bridge/webdist/.gitkeep
+mobile/android/.gradle/
+mobile/android/local.properties
+mobile/android/app/build/
+mobile/android/app/.cxx/
+mobile/android/app/src/main/jniLibs/
+mobile/android/app/release.jks
+mobile/ios/Vendor/
+mobile/ios/build/
+mobile/ios/MyGoMusic.xcodeproj/

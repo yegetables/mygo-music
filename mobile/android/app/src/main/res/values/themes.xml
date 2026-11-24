@@ -1,0 +1,7 @@
+<resources>
+    <style name="Theme.MyGoMusic" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowBackground">#0F1014</item>
+    </style>
+</resources>

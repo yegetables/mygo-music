@@ -1,0 +1,50 @@
+name: Mobile iPadOS IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "internal/mobilecore/**"
+      - "internal/music/**"
+      - "internal/plugin/**"
+      - "internal/lyrics/**"
+      - "internal/local/**"
+      - "mobile/bridge/**"
+      - "mobile/web/**"
+      - "mobile/ios/**"
+      - ".github/workflows/mobile-ios.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-ipa:
+    name: Build iPadOS 17+ IPA (arm64)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Build iPadOS 17+ IPA
+        run: bash mobile/ios/build-ios.sh
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MyGoMusic-iPadOS17-arm64-ipa
+          path: mobile/ios/build/*.ipa
+          retention-days: 30
