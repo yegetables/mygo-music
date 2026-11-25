@@ -6,6 +6,7 @@ import { Icon } from "./Icons";
 interface PluginInstallModalProps {
   open: boolean;
   initialPending?: PendingPlugin | null;
+  activeGitHubProxy?: string;
   onClose: () => void;
   onInstalled: (pluginId: string) => void;
   t: (k: string) => string;
@@ -14,6 +15,7 @@ interface PluginInstallModalProps {
 export const PluginInstallModal: React.FC<PluginInstallModalProps> = ({
   open,
   initialPending,
+  activeGitHubProxy,
   onClose,
   onInstalled,
   t,
@@ -147,11 +149,16 @@ export const PluginInstallModal: React.FC<PluginInstallModalProps> = ({
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 <input
                   className="form-input"
-                  placeholder="owner/repo 或 https://github.com/owner/repo"
+                  placeholder="owner/repo、github.com/... 或 gh-proxy 链接"
                   value={repo}
                   onChange={(e) => setRepo(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && handleGitHub()}
                 />
+                {activeGitHubProxy && (
+                  <div className="proxy-hint">
+                    {t("GitHub Proxy Active Hint")}: {activeGitHubProxy}
+                  </div>
+                )}
                 <button className="btn btn-primary" disabled={busy || !repo.trim()} onClick={handleGitHub}>
                   {busy ? "..." : t("Install")}
                 </button>

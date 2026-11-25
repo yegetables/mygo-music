@@ -267,57 +267,84 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun downloadAndInstallApk(downloadUrl: String, version: String) {
+    private fun downloadAndInstallApk(downloadUrl: String, fallbackUrl: String, version: String) {
         updateExecutor.execute {
+            val candidates = buildList {
+                if (downloadUrl.isNotBlank()) add(downloadUrl)
+                if (fallbackUrl.isNotBlank() && fallbackUrl != downloadUrl) add(fallbackUrl)
+            }
+            var lastError: Throwable? = null
             try {
-                sendEventToWeb(
-                    "updateDownloadProgress",
-                    JSONObject().put("state", "downloading").put("percent", 0)
-                )
                 val updatesDir = File(cacheDir, "updates").apply { mkdirs() }
                 val safeVer = version.replace(Regex("[^0-9A-Za-z._-]"), "_")
                 val dest = File(updatesDir, "mygo-music-$safeVer.apk")
                 val tmp = File(updatesDir, "mygo-music-$safeVer.apk.part")
+                var succeeded = false
 
-                val conn = (URL(downloadUrl).openConnection() as HttpURLConnection).apply {
-                    instanceFollowRedirects = true
-                    connectTimeout = 20_000
-                    readTimeout = 60_000
-                }
-                val code = conn.responseCode
-                if (code !in 200..299) {
-                    conn.disconnect()
-                    throw IllegalStateException("HTTP $code")
-                }
-                val total = conn.contentLengthLong
-                var downloaded = 0L
-                var lastPct = -1
-                conn.inputStream.use { input ->
-                    tmp.outputStream().use { output ->
-                        val buf = ByteArray(16 * 1024)
-                        while (true) {
-                            val n = input.read(buf)
-                            if (n <= 0) break
-                            output.write(buf, 0, n)
-                            downloaded += n
-                            if (total > 0) {
-                                val pct = ((downloaded * 100L) / total).toInt().coerceIn(0, 100)
-                                if (pct != lastPct) {
-                                    lastPct = pct
-                                    sendEventToWeb(
-                                        "updateDownloadProgress",
-                                        JSONObject()
-                                            .put("state", "downloading")
-                                            .put("percent", pct)
-                                            .put("downloadedBytes", downloaded)
-                                            .put("totalBytes", total)
-                                    )
+                for ((idx, targetUrl) in candidates.withIndex()) {
+                    val isLast = idx == candidates.lastIndex
+                    sendEventToWeb(
+                        "updateDownloadProgress",
+                        JSONObject().put("state", "downloading").put("percent", 0)
+                    )
+                    if (tmp.exists()) tmp.delete()
+                    var conn: HttpURLConnection? = null
+                    try {
+                        conn = (URL(targetUrl).openConnection() as HttpURLConnection).apply {
+                            instanceFollowRedirects = true
+                            connectTimeout = 20_000
+                            readTimeout = 60_000
+                        }
+                        val code = conn.responseCode
+                        if (code !in 200..299) {
+                            throw IllegalStateException("HTTP $code")
+                        }
+                        val ct = (conn.contentType ?: "").lowercase()
+                        if (!isLast && ct.contains("text/html")) {
+                            throw IllegalStateException("Unexpected HTML response from proxy")
+                        }
+                        val total = conn.contentLengthLong
+                        var downloaded = 0L
+                        var lastPct = -1
+                        conn.inputStream.use { input ->
+                            tmp.outputStream().use { output ->
+                                val buf = ByteArray(16 * 1024)
+                                while (true) {
+                                    val n = input.read(buf)
+                                    if (n <= 0) break
+                                    output.write(buf, 0, n)
+                                    downloaded += n
+                                    if (total > 0) {
+                                        val pct = ((downloaded * 100L) / total).toInt().coerceIn(0, 100)
+                                        if (pct != lastPct) {
+                                            lastPct = pct
+                                            sendEventToWeb(
+                                                "updateDownloadProgress",
+                                                JSONObject()
+                                                    .put("state", "downloading")
+                                                    .put("percent", pct)
+                                                    .put("downloadedBytes", downloaded)
+                                                    .put("totalBytes", total)
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
+                        succeeded = true
+                        break
+                    } catch (e: Throwable) {
+                        lastError = e
+                        if (tmp.exists()) tmp.delete()
+                        if (isLast) throw e
+                    } finally {
+                        conn?.disconnect()
                     }
                 }
-                conn.disconnect()
+
+                if (!succeeded) {
+                    throw lastError ?: IllegalStateException("Download failed")
+                }
                 if (dest.exists()) dest.delete()
                 if (!tmp.renameTo(dest)) {
                     tmp.copyTo(dest, overwrite = true)
@@ -405,9 +432,10 @@ class MainActivity : AppCompatActivity() {
 
                 "downloadAndInstallUpdate" -> {
                     val url = payload.optString("url")
+                    val fallbackUrl = payload.optString("fallbackUrl", "")
                     val ver = payload.optString("version", "latest")
                     if (url.isNotBlank()) {
-                        downloadAndInstallApk(url, ver)
+                        downloadAndInstallApk(url, fallbackUrl, ver)
                     }
                 }
 

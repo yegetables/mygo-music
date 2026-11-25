@@ -77,7 +77,9 @@ func Start(opts Options) (*Server, error) {
 
 	s.state = newStateStore(opts.DataDir, opts.SystemLangs)
 	s.auth = newAuthManager(s.emit)
-	s.sources = newSourceManager(opts.DataDir, s.emit)
+	s.sources = newSourceManager(opts.DataDir, s.emit, func() string {
+		return s.state.Settings().EffectiveGitHubProxy()
+	})
 	s.media = newMediaProxy(opts.CacheDir, s.sources, func() int {
 		return s.state.Settings().CacheLimitMB
 	})
@@ -208,9 +210,12 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 				StageSparks      *bool    `json:"stageSparks"`
 				DisabledPlugins  []string `json:"disabledPlugins"`
 				HasDisabled      bool     `json:"-"`
-				UpdateChannel    *string  `json:"updateChannel"`
-				AutoCheckUpdates *bool    `json:"autoCheckUpdates"`
-				Platform         *string  `json:"platform"`
+				UpdateChannel        *string  `json:"updateChannel"`
+				AutoCheckUpdates     *bool    `json:"autoCheckUpdates"`
+				GitHubProxyEnabled   *bool    `json:"githubProxyEnabled"`
+				GitHubProxyMode      *string  `json:"githubProxyMode"`
+				GitHubProxyCustomURL *string  `json:"githubProxyCustomUrl"`
+				Platform             *string  `json:"platform"`
 			}
 			var rawMap map[string]json.RawMessage
 			if err := decodeBody(r, &rawMap); err != nil {
@@ -244,6 +249,17 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 						return
 					}
 				}
+			}
+
+			// Validate custom GitHub proxy URL before persisting.
+			var normalizedCustomProxy *string
+			if patch.GitHubProxyCustomURL != nil {
+				norm, err := plugin.NormalizeGitHubProxy(*patch.GitHubProxyCustomURL)
+				if err != nil {
+					writeError(w, http.StatusBadRequest, err)
+					return
+				}
+				normalizedCustomProxy = &norm
 			}
 
 			cacheChanged := false
@@ -301,6 +317,15 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 				}
 				if patch.AutoCheckUpdates != nil {
 					st.AutoCheckUpdates = *patch.AutoCheckUpdates
+				}
+				if patch.GitHubProxyEnabled != nil {
+					st.GitHubProxyEnabled = *patch.GitHubProxyEnabled
+				}
+				if patch.GitHubProxyMode != nil {
+					st.GitHubProxyMode = *patch.GitHubProxyMode
+				}
+				if normalizedCustomProxy != nil {
+					st.GitHubProxyCustomURL = *normalizedCustomProxy
 				}
 			})
 			if err != nil {

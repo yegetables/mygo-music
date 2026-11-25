@@ -97,6 +97,9 @@ export const App: React.FC = () => {
     stageSparks: false,
     updateChannel: "fork",
     autoCheckUpdates: true,
+    githubProxyEnabled: false,
+    githubProxyMode: "gh-proxy.com",
+    githubProxyCustomUrl: "",
   });
   const [sources, setSources] = useState<SourceSummary[]>([]);
   const [account, setAccount] = useState<Account | null>(null);
@@ -1842,6 +1845,15 @@ export const App: React.FC = () => {
       <PluginInstallModal
         open={installOpen}
         initialPending={pendingPlugin}
+        activeGitHubProxy={
+          settings.githubProxyEnabled
+            ? settings.githubProxyMode === "gh-proxy.org"
+              ? "https://gh-proxy.org"
+              : settings.githubProxyMode === "custom"
+              ? (settings.githubProxyCustomUrl || "").trim()
+              : "https://gh-proxy.com"
+            : ""
+        }
         onClose={() => {
           setInstallOpen(false);
           setPendingPlugin(null);

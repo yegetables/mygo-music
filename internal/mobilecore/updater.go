@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"runtime"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"mygo-music/internal/music"
+	"mygo-music/internal/plugin"
 )
 
 const (
@@ -31,20 +33,21 @@ type UpdateChannelInfo struct {
 
 // UpdateRelease describes the latest release discovered on the active channel.
 type UpdateRelease struct {
-	Channel       string `json:"channel"`
-	Repo          string `json:"repo"`
-	Current       string `json:"currentVersion"`
-	Latest        string `json:"latestVersion"`
-	HasUpdate     bool   `json:"hasUpdate"`
-	Skipped       bool   `json:"skipped"`
-	Notes         string `json:"notes,omitempty"`
-	ReleaseURL    string `json:"releaseUrl,omitempty"`
-	AssetName     string `json:"assetName,omitempty"`
-	DownloadURL   string `json:"downloadUrl,omitempty"`
-	AssetSize     int64  `json:"assetSize,omitempty"`
-	PublishedAt   string `json:"publishedAt,omitempty"`
-	CheckedAt     string `json:"checkedAt"`
-	CanDirectLoad bool   `json:"canDirectInstall"` // true on Android with APK asset
+	Channel             string `json:"channel"`
+	Repo                string `json:"repo"`
+	Current             string `json:"currentVersion"`
+	Latest              string `json:"latestVersion"`
+	HasUpdate           bool   `json:"hasUpdate"`
+	Skipped             bool   `json:"skipped"`
+	Notes               string `json:"notes,omitempty"`
+	ReleaseURL          string `json:"releaseUrl,omitempty"`
+	AssetName           string `json:"assetName,omitempty"`
+	DownloadURL         string `json:"downloadUrl,omitempty"`
+	FallbackDownloadURL string `json:"fallbackDownloadUrl,omitempty"`
+	AssetSize           int64  `json:"assetSize,omitempty"`
+	PublishedAt         string `json:"publishedAt,omitempty"`
+	CheckedAt           string `json:"checkedAt"`
+	CanDirectLoad       bool   `json:"canDirectInstall"` // true on Android with APK asset
 }
 
 type githubReleaseAsset struct {
@@ -178,23 +181,87 @@ func (u *appUpdater) Check(platform string) (*UpdateRelease, error) {
 	}
 
 	endpoint := fmt.Sprintf("%s/repos/%s/releases/latest", strings.TrimRight(u.apiBase, "/"), ch.Repo)
-	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", music.Agent)
+	proxy := u.state.Settings().EffectiveGitHubProxy()
 
-	resp, err := u.httpClient.Do(req)
-	if err != nil {
-		return nil, err
+	candidates := []string{endpoint}
+	if proxy != "" {
+		if wrapped := proxy + "/" + endpoint; wrapped != endpoint {
+			candidates = []string{wrapped, endpoint}
+		}
 	}
-	defer resp.Body.Close()
 
 	nowStr := time.Now().UTC().Format(time.RFC3339)
+	var rel githubReleaseResp
+	var notFound bool
+	var lastErr error
+
+	for idx, target := range candidates {
+		isLast := idx == len(candidates)-1
+		req, err := http.NewRequest(http.MethodGet, target, nil)
+		if err != nil {
+			lastErr = err
+			if !isLast {
+				continue
+			}
+			return nil, err
+		}
+		req.Header.Set("Accept", "application/vnd.github+json")
+		req.Header.Set("User-Agent", music.Agent)
+
+		resp, err := u.httpClient.Do(req)
+		if err != nil {
+			lastErr = err
+			if !isLast {
+				log.Printf("updater proxy check failed (%s), falling back to direct: %v", target, err)
+				continue
+			}
+			return nil, err
+		}
+
+		ct := strings.ToLower(resp.Header.Get("Content-Type"))
+		if resp.StatusCode == http.StatusNotFound {
+			resp.Body.Close()
+			if isLast || strings.Contains(ct, "json") {
+				notFound = true
+				lastErr = nil
+				break
+			}
+			lastErr = fmt.Errorf("GitHub proxy %s", resp.Status)
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+			resp.Body.Close()
+			lastErr = fmt.Errorf("GitHub API %s: %s", resp.Status, strings.TrimSpace(string(body)))
+			if !isLast {
+				log.Printf("updater proxy answered %s (%s), falling back to direct", resp.Status, target)
+				continue
+			}
+			return nil, lastErr
+		}
+
+		var decoded githubReleaseResp
+		decErr := json.NewDecoder(resp.Body).Decode(&decoded)
+		resp.Body.Close()
+		if decErr != nil {
+			lastErr = decErr
+			if !isLast {
+				log.Printf("updater proxy returned invalid JSON (%s), falling back to direct: %v", target, decErr)
+				continue
+			}
+			return nil, decErr
+		}
+		rel = decoded
+		lastErr = nil
+		break
+	}
+
+	if lastErr != nil {
+		return nil, lastErr
+	}
 
 	// If the fork repository has not published any release yet, report up-to-date cleanly.
-	if resp.StatusCode == http.StatusNotFound {
+	if notFound {
 		_, _ = u.state.UpdateSettings(func(s *Settings) {
 			s.LastUpdateCheck = nowStr
 		})
@@ -211,26 +278,23 @@ func (u *appUpdater) Check(platform string) (*UpdateRelease, error) {
 		u.mu.Unlock()
 		return res, nil
 	}
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, fmt.Errorf("GitHub API %s: %s", resp.Status, strings.TrimSpace(string(body)))
-	}
-
-	var rel githubReleaseResp
-	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
-		return nil, err
-	}
 
 	latestVer := strings.TrimPrefix(strings.TrimSpace(rel.TagName), "v")
 	if latestVer == "" {
 		latestVer = strings.TrimPrefix(strings.TrimSpace(rel.Name), "v")
 	}
-	hasUpdate := compareSemver(latestVer, AppVersion) > 0
+	hasUpdate := isNewerRelease(latestVer, AppVersion, rel.PublishedAt, AppBuildTime)
 	asset := pickReleaseAsset(rel.Assets, plat)
 
 	st, _ := u.state.UpdateSettings(func(s *Settings) {
 		s.LastUpdateCheck = nowStr
 	})
+
+	skipped := false
+	if hasUpdate && st.SkippedVersion != "" {
+		skipNorm := strings.TrimPrefix(strings.TrimSpace(st.SkippedVersion), "v")
+		skipped = strings.EqualFold(latestVer, skipNorm) || compareSemver(latestVer, skipNorm) == 0
+	}
 
 	res := &UpdateRelease{
 		Channel:       ch.ID,
@@ -238,7 +302,7 @@ func (u *appUpdater) Check(platform string) (*UpdateRelease, error) {
 		Current:       AppVersion,
 		Latest:        latestVer,
 		HasUpdate:     hasUpdate,
-		Skipped:       hasUpdate && st.SkippedVersion != "" && compareSemver(latestVer, st.SkippedVersion) == 0,
+		Skipped:       skipped,
 		Notes:         rel.Body,
 		ReleaseURL:    rel.HTMLURL,
 		PublishedAt:   rel.PublishedAt,
@@ -247,14 +311,37 @@ func (u *appUpdater) Check(platform string) (*UpdateRelease, error) {
 	}
 	if asset != nil {
 		res.AssetName = asset.Name
-		res.DownloadURL = asset.BrowserDownloadURL
 		res.AssetSize = asset.Size
+		if proxy != "" && plugin.IsGitHubURL(asset.BrowserDownloadURL) {
+			res.DownloadURL = plugin.WrapGitHubURL(proxy, asset.BrowserDownloadURL)
+			res.FallbackDownloadURL = asset.BrowserDownloadURL
+		} else {
+			res.DownloadURL = asset.BrowserDownloadURL
+		}
 	}
 
 	u.mu.Lock()
 	u.lastResult = res
 	u.mu.Unlock()
 	return res, nil
+}
+
+// isNewerRelease decides whether GitHub's Latest release is newer than the
+// running build. When both the release's PublishedAt timestamp and this binary's
+// AppBuildTime are present, publish time takes precedence so any latest tag
+// naming scheme works; otherwise it falls back to semver + dev-build comparison.
+func isNewerRelease(latestVer, currentVer, publishedAt, buildTime string) bool {
+	l := strings.TrimPrefix(strings.TrimSpace(latestVer), "v")
+	c := strings.TrimPrefix(strings.TrimSpace(currentVer), "v")
+	if l == "" || strings.EqualFold(l, c) {
+		return false
+	}
+	pubT, pubErr := time.Parse(time.RFC3339, strings.TrimSpace(publishedAt))
+	bldT, bldErr := time.Parse(time.RFC3339, strings.TrimSpace(buildTime))
+	if pubErr == nil && bldErr == nil {
+		return pubT.After(bldT)
+	}
+	return compareSemver(l, c) > 0
 }
 
 func pickReleaseAsset(assets []githubReleaseAsset, platform string) *githubReleaseAsset {

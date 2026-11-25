@@ -82,8 +82,14 @@ var (
 
 // ParseRepo reads a repository as the listener may write it: owner/repo, or its
 // address on GitHub, as copied from the browser on any of its pages, such as
-// github.com/owner/repo/tree/main, or to clone it.
+// github.com/owner/repo/tree/main, or to clone it, or wrapped with a GitHub proxy
+// such as https://gh-proxy.com/github.com/owner/repo.
 func ParseRepo(in string) (string, error) {
+	repo, _, err := ParseRepoWithProxy(in)
+	return repo, err
+}
+
+func parseDirectRepo(in string) (string, error) {
 	s := strings.TrimSpace(in)
 	if rest, ok := cutPrefixFold(s, "git@github.com:"); ok {
 		s = rest
@@ -197,25 +203,112 @@ func githubSend(url, accept string) (*http.Response, error) {
 	}
 }
 
+func githubCandidates(target string, proxies []string) []string {
+	if len(proxies) == 0 {
+		return []string{target}
+	}
+	seen := make(map[string]struct{}, len(proxies)+1)
+	out := make([]string, 0, len(proxies)+1)
+	add := func(u string) {
+		if u == "" {
+			return
+		}
+		if _, ok := seen[u]; ok {
+			return
+		}
+		seen[u] = struct{}{}
+		out = append(out, u)
+	}
+	isAPI := strings.HasPrefix(target, githubAPI+"/")
+	for _, raw := range proxies {
+		base, err := NormalizeGitHubProxy(raw)
+		if err != nil || base == "" {
+			continue
+		}
+		if isAPI || IsGitHubURL(target) {
+			if strings.HasPrefix(strings.ToLower(target), strings.ToLower(base)+"/") {
+				add(target)
+			} else {
+				add(base + "/" + target)
+			}
+		}
+	}
+	add(target)
+	return out
+}
+
 func githubGet(path string, out any) (status int, err error) {
-	res, err := githubSend(githubAPI+path, "application/vnd.github+json")
-	if err != nil {
-		return 0, err
+	return githubGetWithProxies(path, out, nil)
+}
+
+func githubGetWithProxies(path string, out any, proxies []string) (status int, err error) {
+	candidates := githubCandidates(githubAPI+path, proxies)
+	var lastStatus int
+	var lastErr error
+	for idx, target := range candidates {
+		isLast := idx == len(candidates)-1
+		res, err := githubSend(target, "application/vnd.github+json")
+		if err != nil {
+			lastStatus, lastErr = 0, err
+			if !isLast {
+				log.Printf("GitHub proxy request failed (%s), trying fallback: %v", target, err)
+				continue
+			}
+			return 0, err
+		}
+		status = res.StatusCode
+		ct := strings.ToLower(res.Header.Get("Content-Type"))
+		switch status {
+		case http.StatusOK:
+			decErr := json.NewDecoder(res.Body).Decode(out)
+			res.Body.Close()
+			if decErr == nil {
+				return status, nil
+			}
+			lastStatus, lastErr = status, decErr
+			if !isLast {
+				log.Printf("GitHub proxy returned invalid JSON (%s), trying fallback: %v", target, decErr)
+				continue
+			}
+			return status, decErr
+		case http.StatusNotFound:
+			res.Body.Close()
+			// Only trust 404 from a proxy if it actually returned JSON from GitHub API;
+			// HTML 404s usually mean the proxy itself rejected the API route.
+			if isLast || strings.Contains(ct, "json") {
+				return status, nil
+			}
+			lastStatus, lastErr = status, fmt.Errorf("GitHub proxy answered %s", res.Status)
+			continue
+		case http.StatusForbidden, http.StatusTooManyRequests:
+			res.Body.Close()
+			lastStatus, lastErr = status, errors.New("GitHub says to slow down; try again in a while")
+			if !isLast {
+				log.Printf("GitHub proxy rate-limited/forbidden (%s: %s), trying fallback", target, res.Status)
+				continue
+			}
+			return status, lastErr
+		default:
+			res.Body.Close()
+			lastStatus, lastErr = status, fmt.Errorf("GitHub answered %s", res.Status)
+			if !isLast {
+				log.Printf("GitHub proxy answered %s (%s), trying fallback", res.Status, target)
+				continue
+			}
+			return status, lastErr
+		}
 	}
-	defer res.Body.Close()
-	switch res.StatusCode {
-	case http.StatusOK:
-		return res.StatusCode, json.NewDecoder(res.Body).Decode(out)
-	case http.StatusNotFound:
-		return res.StatusCode, nil
-	case http.StatusForbidden, http.StatusTooManyRequests:
-		return res.StatusCode, errors.New("GitHub says to slow down; try again in a while")
-	}
-	return res.StatusCode, fmt.Errorf("GitHub answered %s", res.Status)
+	return lastStatus, lastErr
 }
 
 // Latest finds what a repository offers now.
 func Latest(repo string) (*Release, error) {
+	return LatestWithProxies(repo)
+}
+
+// LatestWithProxies finds what a repository offers now, trying each configured
+// GitHub proxy first and falling back to direct GitHub API access.
+func LatestWithProxies(repo string, proxies ...string) (*Release, error) {
 	var rel struct {
 		Tag    string `json:"tag_name"`
 		Zip    string `json:"zipball_url"`
@@ -225,7 +318,7 @@ func Latest(repo string) (*Release, error) {
 			API  string `json:"url"`
 		} `json:"assets"`
 	}
-	status, err := githubGet("/repos/"+repo+"/releases/latest", &rel)
+	status, err := githubGetWithProxies("/repos/"+repo+"/releases/latest", &rel, proxies)
 	if err != nil {
 		return nil, err
 	}
@@ -248,7 +341,7 @@ func Latest(repo string) (*Release, error) {
 	var commit struct {
 		SHA string `json:"sha"`
 	}
-	status, err = githubGet("/repos/"+repo+"/commits/HEAD", &commit)
+	status, err = githubGetWithProxies("/repos/"+repo+"/commits/HEAD", &commit, proxies)
 	if err != nil {
 		return nil, err
 	}
@@ -287,17 +380,27 @@ func pickAsset(names []string, goos, goarch string) int {
 // folder, without installing it, and checks it's a plugin that compiles. Nothing
 // of it runs. Discard or Install it next.
 func Fetch(repo, dir string) (*Pending, error) {
-	rel, err := Latest(repo)
+	return FetchWithProxies(repo, dir)
+}
+
+// FetchWithProxies is Fetch with optional GitHub proxies tried before direct GitHub.
+func FetchWithProxies(repo, dir string, proxies ...string) (*Pending, error) {
+	rel, err := LatestWithProxies(repo, proxies...)
 	if err != nil {
 		return nil, err
 	}
-	return FetchRelease(rel, dir)
+	return FetchReleaseWithProxies(rel, dir, proxies...)
 }
 
 // FetchRelease is Fetch of a release Latest found already, without asking GitHub
 // again what there is.
 func FetchRelease(rel *Release, dir string) (*Pending, error) {
-	return pending(dir, func(tmp string) (*Pending, error) { return fetchInto(rel, tmp) })
+	return FetchReleaseWithProxies(rel, dir)
+}
+
+// FetchReleaseWithProxies is FetchRelease with optional GitHub proxies tried before direct GitHub.
+func FetchReleaseWithProxies(rel *Release, dir string, proxies ...string) (*Pending, error) {
+	return pending(dir, func(tmp string) (*Pending, error) { return fetchInto(rel, tmp, proxies) })
 }
 
 // pending makes a plugin waiting to be installed, in a folder of its own in dir
@@ -320,9 +423,9 @@ func pending(dir string, into func(tmp string) (*Pending, error)) (*Pending, err
 	return p, nil
 }
 
-func fetchInto(rel *Release, tmp string) (*Pending, error) {
+func fetchInto(rel *Release, tmp string, proxies []string) (*Pending, error) {
 	archive := filepath.Join(tmp, "archive.zip")
-	if err := download(rel.url, archive); err != nil {
+	if err := downloadWithProxies(rel.url, archive, proxies); err != nil {
 		return nil, err
 	}
 	unpacked := filepath.Join(tmp, "unpacked")
@@ -452,33 +555,73 @@ func copyFile(from, to string, perm os.FileMode, limit int64) (int64, error) {
 }
 
 func download(url, path string) error {
+	return downloadWithProxies(url, path, nil)
+}
+
+func downloadWithProxies(rawURL, path string, proxies []string) error {
 	// An asset from the API comes as itself with this, and as its description
 	// without; a zipball refuses it.
 	accept := ""
-	if strings.Contains(url, "/releases/assets/") {
+	if strings.Contains(rawURL, "/releases/assets/") {
 		accept = "application/octet-stream"
 	}
-	res, err := githubSend(url, accept)
-	if err != nil {
-		return err
+	candidates := githubCandidates(rawURL, proxies)
+	var lastErr error
+	for idx, target := range candidates {
+		isLast := idx == len(candidates)-1
+		res, err := githubSend(target, accept)
+		if err != nil {
+			lastErr = err
+			if !isLast {
+				log.Printf("GitHub proxy download failed (%s), trying fallback: %v", target, err)
+				continue
+			}
+			return err
+		}
+		if res.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("downloading the plugin: %s", res.Status)
+			res.Body.Close()
+			if !isLast {
+				log.Printf("GitHub proxy download answered %s (%s), trying fallback", res.Status, target)
+				continue
+			}
+			return lastErr
+		}
+		ct := strings.ToLower(res.Header.Get("Content-Type"))
+		if !isLast && strings.Contains(ct, "text/html") {
+			lastErr = fmt.Errorf("downloading the plugin: unexpected HTML response from proxy")
+			res.Body.Close()
+			log.Printf("GitHub proxy returned HTML for archive (%s), trying fallback", target)
+			continue
+		}
+		f, err := os.Create(path)
+		if err != nil {
+			res.Body.Close()
+			return err
+		}
+		n, copyErr := io.Copy(f, io.LimitReader(res.Body, maxArchive+1))
+		res.Body.Close()
+		closeErr := f.Close()
+		if copyErr != nil {
+			_ = os.Remove(path)
+			lastErr = copyErr
+			if !isLast {
+				log.Printf("GitHub proxy download interrupted (%s), trying fallback: %v", target, copyErr)
+				continue
+			}
+			return copyErr
+		}
+		if closeErr != nil {
+			_ = os.Remove(path)
+			return closeErr
+		}
+		if n > maxArchive {
+			_ = os.Remove(path)
+			return errors.New("the plugin's archive is too large")
+		}
+		return nil
 	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		return fmt.Errorf("downloading the plugin: %s", res.Status)
-	}
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	n, err := io.Copy(f, io.LimitReader(res.Body, maxArchive+1))
-	if err != nil {
-		return err
-	}
-	if n > maxArchive {
-		return errors.New("the plugin's archive is too large")
-	}
-	return f.Close()
+	return lastErr
 }
 
 // unzip unpacks an archive into dir, refusing anything that would land outside

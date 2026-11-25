@@ -8,6 +8,16 @@ const zh: Record<string, string> = {
   Playback: "播放",
   Experiments: "实验性功能",
   Cache: "缓存",
+  Network: "网络",
+  "GitHub Proxy": "GitHub 代理",
+  "GitHub Proxy Help": "优先通过代理访问 GitHub（插件安装、插件更新与应用更新），失败时自动回退直连",
+  "Proxy Service": "代理节点",
+  "Custom Proxy": "自定义",
+  "Custom Proxy Sub": "填写自建或第三方代理地址",
+  "Custom Proxy URL": "自定义代理地址",
+  "Custom Proxy Help": "填写 http(s) 代理前缀（例如 https://your-proxy.example.com）；留空将自动回退直连",
+  "Save Setting": "保存",
+  "GitHub Proxy Active Hint": "将优先通过代理访问，失败自动回退原始 GitHub",
   Updates: "更新",
   "Liked Songs": "我喜欢的音乐",
   "Saved Albums": "收藏的专辑",
@@ -138,6 +148,11 @@ const enFallback: Record<string, string> = {
   "Fog Help": "Fill Now Playing's backdrop with cover-tinted fog rising to the bass; experimental, uses more battery",
   "Grow From Cover Help": "Expand Now Playing out of the player bar's cover and shrink back into it instead of sliding up",
   "Update Channel Help": "Choose which repository auto-updates check; channels without builds for this platform are disabled",
+  "GitHub Proxy Help": "Route GitHub plugin installs and app updates through a proxy first, falling back to direct GitHub on failure",
+  "Custom Proxy Sub": "Enter your own proxy URL",
+  "Custom Proxy Help": "Enter an http(s) proxy base URL (e.g. https://your-proxy.example.com); leave empty to fall back to direct",
+  "Save Setting": "Save",
+  "GitHub Proxy Active Hint": "Will try the configured proxy first and fall back to direct GitHub on failure",
 };
 
 export function resolveLang(setting: string): "zh-CN" | "en" {

@@ -9,58 +9,95 @@ import (
 
 	"mygo-music/internal/i18n"
 	"mygo-music/internal/music"
+	"mygo-music/internal/plugin"
 )
 
 // AppVersion matches mygo.config.ts so plugins declaring minAppVersion load cleanly.
 // Build scripts can override it via -ldflags "-X mygo-music/internal/mobilecore.AppVersion=...".
 var AppVersion = "0.1.25"
 
+// AppBuildTime records when this mobile binary was built (RFC3339 UTC).
+// Build scripts inject it via -ldflags "-X mygo-music/internal/mobilecore.AppBuildTime=..."
+// so update checks can compare GitHub's Latest release publish time against this build.
+var AppBuildTime = ""
+
 const (
 	UpdateChannelFork     = "fork"
 	UpdateChannelOfficial = "official"
+
+	GitHubProxyModeCom    = "gh-proxy.com"
+	GitHubProxyModeOrg    = "gh-proxy.org"
+	GitHubProxyModeCustom = "custom"
 )
 
 // Settings holds persisted mobile app preferences matching desktop MyGo Music.
 type Settings struct {
-	ActiveSource     string   `json:"activeSource"`
-	Quality          string   `json:"quality"`
-	Language         string   `json:"language"`
-	Theme            string   `json:"theme"`
-	CacheLimitMB     int      `json:"cacheLimitMB"`
-	PlayerStyle      string   `json:"playerStyle"` // "", "vinyl", "cassette"
-	HotComments      bool     `json:"hotComments"`
-	Normalize        bool     `json:"normalize"`
-	Smoke            bool     `json:"smoke"`
-	Fog              bool     `json:"fog"`
-	GrowFromCover    bool     `json:"growFromCover"`
-	LyricsStage      bool     `json:"lyricsStage"`
-	StageStyle       string   `json:"stageStyle"` // "", "partita", "tilt"
-	StageSparks      bool     `json:"stageSparks"`
-	DisabledPlugins  []string `json:"disabledPlugins,omitempty"`
-	UpdateChannel    string   `json:"updateChannel"` // "fork" (default) | "official"
-	AutoCheckUpdates bool     `json:"autoCheckUpdates"`
-	LastUpdateCheck  string   `json:"lastUpdateCheck,omitempty"`
-	SkippedVersion   string   `json:"skippedVersion,omitempty"`
+	ActiveSource         string   `json:"activeSource"`
+	Quality              string   `json:"quality"`
+	Language             string   `json:"language"`
+	Theme                string   `json:"theme"`
+	CacheLimitMB         int      `json:"cacheLimitMB"`
+	PlayerStyle          string   `json:"playerStyle"` // "", "vinyl", "cassette"
+	HotComments          bool     `json:"hotComments"`
+	Normalize            bool     `json:"normalize"`
+	Smoke                bool     `json:"smoke"`
+	Fog                  bool     `json:"fog"`
+	GrowFromCover        bool     `json:"growFromCover"`
+	LyricsStage          bool     `json:"lyricsStage"`
+	StageStyle           string   `json:"stageStyle"` // "", "partita", "tilt"
+	StageSparks          bool     `json:"stageSparks"`
+	DisabledPlugins      []string `json:"disabledPlugins,omitempty"`
+	UpdateChannel        string   `json:"updateChannel"` // "fork" (default) | "official"
+	AutoCheckUpdates     bool     `json:"autoCheckUpdates"`
+	LastUpdateCheck      string   `json:"lastUpdateCheck,omitempty"`
+	SkippedVersion       string   `json:"skippedVersion,omitempty"`
+	GitHubProxyEnabled   bool     `json:"githubProxyEnabled"`
+	GitHubProxyMode      string   `json:"githubProxyMode"` // "gh-proxy.com" | "gh-proxy.org" | "custom"
+	GitHubProxyCustomURL string   `json:"githubProxyCustomUrl,omitempty"`
 }
 
 func defaultSettings() Settings {
 	return Settings{
-		ActiveSource:     "local",
-		Quality:          "high",
-		Language:         i18n.System,
-		Theme:            "system",
-		CacheLimitMB:     2048,
-		PlayerStyle:      "",
-		HotComments:      false,
-		Normalize:        true,
-		Smoke:            false,
-		Fog:              false,
-		GrowFromCover:    false,
-		LyricsStage:      false,
-		StageStyle:       "",
-		StageSparks:      false,
-		UpdateChannel:    UpdateChannelFork,
-		AutoCheckUpdates: true,
+		ActiveSource:       "local",
+		Quality:            "high",
+		Language:           i18n.System,
+		Theme:              "system",
+		CacheLimitMB:       2048,
+		PlayerStyle:        "",
+		HotComments:        false,
+		Normalize:          true,
+		Smoke:              false,
+		Fog:                false,
+		GrowFromCover:      false,
+		LyricsStage:        false,
+		StageStyle:         "",
+		StageSparks:        false,
+		UpdateChannel:      UpdateChannelFork,
+		AutoCheckUpdates:   true,
+		GitHubProxyEnabled: false,
+		GitHubProxyMode:    GitHubProxyModeCom,
+	}
+}
+
+// EffectiveGitHubProxy returns the active normalized GitHub proxy base URL, or
+// "" when GitHub proxy is disabled or misconfigured.
+func (s Settings) EffectiveGitHubProxy() string {
+	if !s.GitHubProxyEnabled {
+		return ""
+	}
+	switch sanitizeGitHubProxyMode(s.GitHubProxyMode) {
+	case GitHubProxyModeCom:
+		return plugin.GitHubProxyCom
+	case GitHubProxyModeOrg:
+		return plugin.GitHubProxyOrg
+	case GitHubProxyModeCustom:
+		norm, err := plugin.NormalizeGitHubProxy(s.GitHubProxyCustomURL)
+		if err != nil {
+			return ""
+		}
+		return norm
+	default:
+		return ""
 	}
 }
 
@@ -138,6 +175,15 @@ func sanitizeUpdateChannel(v string) string {
 	}
 }
 
+func sanitizeGitHubProxyMode(v string) string {
+	switch v {
+	case GitHubProxyModeCom, GitHubProxyModeOrg, GitHubProxyModeCustom:
+		return v
+	default:
+		return GitHubProxyModeCom
+	}
+}
+
 func (s *stateStore) load() {
 	if b, err := os.ReadFile(s.settingsPath()); err == nil {
 		// Unmarshal directly onto defaults so omitted boolean fields (e.g.
@@ -162,6 +208,10 @@ func (s *stateStore) load() {
 			loaded.PlayerStyle = sanitizePlayerStyle(loaded.PlayerStyle)
 			loaded.StageStyle = sanitizeStageStyle(loaded.StageStyle)
 			loaded.UpdateChannel = sanitizeUpdateChannel(loaded.UpdateChannel)
+			loaded.GitHubProxyMode = sanitizeGitHubProxyMode(loaded.GitHubProxyMode)
+			if norm, err := plugin.NormalizeGitHubProxy(loaded.GitHubProxyCustomURL); err == nil {
+				loaded.GitHubProxyCustomURL = norm
+			}
 			s.settings = loaded
 		}
 	}
@@ -209,6 +259,10 @@ func (s *stateStore) UpdateSettings(patch func(*Settings)) (Settings, error) {
 	s.settings.PlayerStyle = sanitizePlayerStyle(s.settings.PlayerStyle)
 	s.settings.StageStyle = sanitizeStageStyle(s.settings.StageStyle)
 	s.settings.UpdateChannel = sanitizeUpdateChannel(s.settings.UpdateChannel)
+	s.settings.GitHubProxyMode = sanitizeGitHubProxyMode(s.settings.GitHubProxyMode)
+	if norm, err := plugin.NormalizeGitHubProxy(s.settings.GitHubProxyCustomURL); err == nil {
+		s.settings.GitHubProxyCustomURL = norm
+	}
 	s.applyLanguage()
 	out := s.settings
 	if len(s.settings.DisabledPlugins) > 0 {

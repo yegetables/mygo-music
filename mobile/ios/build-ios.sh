@@ -7,9 +7,10 @@ WEB_DIR="$ROOT_DIR/mobile/web"
 VENDOR_DIR="$IOS_DIR/Vendor"
 BUILD_DIR="$IOS_DIR/build"
 eval "$(bash "$ROOT_DIR/mobile/scripts/version.sh" --bump)"
+BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 OUT_IPA="$BUILD_DIR/MyGoMusic-v${APP_VERSION}-iPadOS17-arm64.ipa"
 
-echo "==> Version: v${APP_VERSION} (MARKETING_VERSION=${BASE_VERSION}, CFBundleVersion=${VERSION_CODE})"
+echo "==> Version: v${APP_VERSION} (MARKETING_VERSION=${BASE_VERSION}, CFBundleVersion=${VERSION_CODE}, buildTime=${BUILD_TIME})"
 echo "==> 1/4 Building mobile/web UI"
 (cd "$WEB_DIR" && bun install --frozen-lockfile 2>/dev/null || bun install)
 (cd "$WEB_DIR" && bun run build)
@@ -25,7 +26,7 @@ GOARCH=arm64 \
 CC="$CC" \
 CGO_CFLAGS="-isysroot $SDKROOT -arch arm64 -mios-version-min=17.0" \
 CGO_LDFLAGS="-isysroot $SDKROOT -arch arm64 -mios-version-min=17.0" \
-go build -C "$ROOT_DIR" -buildmode=c-archive -ldflags="-s -w -X mygo-music/internal/mobilecore.AppVersion=${APP_VERSION}" \
+go build -C "$ROOT_DIR" -buildmode=c-archive -ldflags="-s -w -X mygo-music/internal/mobilecore.AppVersion=${APP_VERSION} -X mygo-music/internal/mobilecore.AppBuildTime=${BUILD_TIME}" \
   -o "$VENDOR_DIR/libmygocore.a" ./mobile/bridge
 
 echo "==> 3/4 Generating Xcode project and compiling .app"

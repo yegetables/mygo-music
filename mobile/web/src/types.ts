@@ -158,6 +158,7 @@ export interface PendingPlugin {
 export type PlayerStyle = "" | "vinyl" | "cassette";
 export type StageStyle = "" | "partita" | "tilt";
 export type UpdateChannel = "fork" | "official";
+export type GitHubProxyMode = "gh-proxy.com" | "gh-proxy.org" | "custom";
 
 export interface MobileSettings {
   activeSource: string;
@@ -179,6 +180,9 @@ export interface MobileSettings {
   autoCheckUpdates: boolean;
   lastUpdateCheck?: string;
   skippedVersion?: string;
+  githubProxyEnabled: boolean;
+  githubProxyMode: GitHubProxyMode;
+  githubProxyCustomUrl?: string;
 }
 
 export interface SessionState {
@@ -293,6 +297,7 @@ export interface UpdateRelease {
   releaseUrl?: string;
   assetName?: string;
   downloadUrl?: string;
+  fallbackDownloadUrl?: string;
   assetSize?: number;
   publishedAt?: string;
   checkedAt: string;

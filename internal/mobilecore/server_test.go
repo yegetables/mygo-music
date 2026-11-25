@@ -448,3 +448,148 @@ func TestDevBuildSemverOrdering(t *testing.T) {
 		}
 	}
 }
+
+// Verifies GitHub proxy settings persistence, custom URL validation, updater proxy-first fallback, and Latest publish-time comparison.
+func TestGitHubProxySettingsAndUpdaterFallback(t *testing.T) {
+	srv, err := Start(Options{DataDir: t.TempDir(), CacheDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Stop()
+
+	// Default: proxy disabled, no proxy URL active.
+	if st := srv.state.Settings(); st.GitHubProxyEnabled || st.EffectiveGitHubProxy() != "" {
+		t.Fatalf("expected proxy disabled by default, got %+v", st)
+	}
+
+	// Invalid custom URL is rejected with HTTP 400.
+	badReq, _ := http.NewRequest(http.MethodPost, "http://"+srv.Addr+"/api/settings", strings.NewReader(`{"githubProxyCustomUrl":"ftp://bad.example.com"}`))
+	badReq.Header.Set("X-MyGo-Token", srv.Token)
+	badReq.Header.Set("Content-Type", "application/json")
+	badResp, err := http.DefaultClient.Do(badReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	badResp.Body.Close()
+	if badResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid custom proxy URL, got %d", badResp.StatusCode)
+	}
+
+	// Enabling built-in gh-proxy.org works and updates EffectiveGitHubProxy.
+	if _, err := srv.state.UpdateSettings(func(st *Settings) {
+		st.GitHubProxyEnabled = true
+		st.GitHubProxyMode = GitHubProxyModeOrg
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := srv.state.Settings().EffectiveGitHubProxy(); got != "https://gh-proxy.org" {
+		t.Fatalf("expected https://gh-proxy.org, got %q", got)
+	}
+
+	// Test updater proxy priority, downloadUrl wrapping, and automatic direct fallback.
+	var directCalls, proxyCalls int
+	proxyBroken := false
+
+	directGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		directCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"tag_name":     "v0.1.25-dev-0002",
+			"name":         "v0.1.25-dev-0002",
+			"published_at": "2026-11-25T12:00:00Z",
+			"html_url":     "https://github.com/yegetables/mygo-music/releases/tag/v0.1.25-dev-0002",
+			"assets": []map[string]any{
+				{"name": "MyGoMusic-v0.1.25-dev-0002-Android12-arm64.apk", "size": 19000000, "browser_download_url": "https://github.com/yegetables/mygo-music/releases/download/v0.1.25-dev-0002/app.apk"},
+			},
+		})
+	}))
+	defer directGH.Close()
+
+	proxySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyCalls++
+		if proxyBroken {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"tag_name":     "v0.1.25-dev-0002",
+			"name":         "v0.1.25-dev-0002",
+			"published_at": "2026-11-25T12:00:00Z",
+			"html_url":     "https://github.com/yegetables/mygo-music/releases/tag/v0.1.25-dev-0002",
+			"assets": []map[string]any{
+				{"name": "MyGoMusic-v0.1.25-dev-0002-Android12-arm64.apk", "size": 19000000, "browser_download_url": "https://github.com/yegetables/mygo-music/releases/download/v0.1.25-dev-0002/app.apk"},
+			},
+		})
+	}))
+	defer proxySrv.Close()
+
+	srv.updater.apiBase = directGH.URL
+	origBuildTime := AppBuildTime
+	origAppVer := AppVersion
+	AppVersion = "0.1.25-dev-0001"
+	AppBuildTime = "2026-11-24T17:00:00Z"
+	defer func() {
+		AppBuildTime = origBuildTime
+		AppVersion = origAppVer
+	}()
+
+	// Configure custom proxy pointing at proxySrv.
+	_, _ = srv.state.UpdateSettings(func(st *Settings) {
+		st.GitHubProxyEnabled = true
+		st.GitHubProxyMode = GitHubProxyModeCustom
+		st.GitHubProxyCustomURL = proxySrv.URL
+	})
+
+	rel, err := srv.updater.Check("android")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proxyCalls != 1 || directCalls != 0 {
+		t.Fatalf("expected proxy-only call, got proxy=%d direct=%d", proxyCalls, directCalls)
+	}
+	if !rel.HasUpdate {
+		t.Fatalf("expected HasUpdate=true when Latest PublishedAt is newer than buildTime")
+	}
+	wantWrapped := proxySrv.URL + "/https://github.com/yegetables/mygo-music/releases/download/v0.1.25-dev-0002/app.apk"
+	if rel.DownloadURL != wantWrapped || rel.FallbackDownloadURL != "https://github.com/yegetables/mygo-music/releases/download/v0.1.25-dev-0002/app.apk" {
+		t.Fatalf("unexpected download URLs: download=%q fallback=%q", rel.DownloadURL, rel.FallbackDownloadURL)
+	}
+
+	// When proxy breaks, updater falls back to direct automatically.
+	proxyBroken = true
+	proxyCalls, directCalls = 0, 0
+	if _, err := srv.updater.Check("android"); err != nil {
+		t.Fatalf("expected fallback to succeed, got %v", err)
+	}
+	if proxyCalls != 1 || directCalls != 1 {
+		t.Fatalf("expected proxy + direct fallback, got proxy=%d direct=%d", proxyCalls, directCalls)
+	}
+
+	// When proxy is disabled, never calls proxy and does not wrap download URL.
+	_, _ = srv.state.UpdateSettings(func(st *Settings) {
+		st.GitHubProxyEnabled = false
+	})
+	proxyCalls, directCalls = 0, 0
+	relDirect, err := srv.updater.Check("android")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proxyCalls != 0 || directCalls != 1 {
+		t.Fatalf("expected direct-only when disabled, got proxy=%d direct=%d", proxyCalls, directCalls)
+	}
+	if relDirect.FallbackDownloadURL != "" || relDirect.DownloadURL != "https://github.com/yegetables/mygo-music/releases/download/v0.1.25-dev-0002/app.apk" {
+		t.Fatalf("expected unwrapped direct download URL, got %+v", relDirect)
+	}
+
+	// Publish-time comparison supports arbitrary Latest tag names and avoids false positives for newer local builds.
+	if !isNewerRelease("v0.1.25", "0.1.25-dev-0001", "2026-11-26T00:00:00Z", "2026-11-25T00:00:00Z") {
+		t.Fatal("newer publish time on Latest should trigger update regardless of tag naming")
+	}
+	if isNewerRelease("v0.1.25-dev-0001", "0.1.25-dev-0002", "2026-11-24T17:00:00Z", "2026-11-25T03:00:00Z") {
+		t.Fatal("older publish time on Latest must not trigger update for a newer local build")
+	}
+	if isNewerRelease("v0.1.25-dev-0002", "0.1.25-dev-0002", "2026-11-26T00:00:00Z", "2026-11-25T00:00:00Z") {
+		t.Fatal("identical version tag must not trigger update")
+	}
+}

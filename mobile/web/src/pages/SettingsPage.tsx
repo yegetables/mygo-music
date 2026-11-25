@@ -3,6 +3,7 @@ import { api, IS_NATIVE, postNative } from "../api";
 import { formatBytes } from "../i18n";
 import type {
   CacheStats,
+  GitHubProxyMode,
   MobileSettings,
   PendingPlugin,
   PlayerStyle,
@@ -58,6 +59,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   const [cacheStats, setCacheStats] = useState<CacheStats | null>(null);
   const [folders, setFolders] = useState<string[]>([]);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [customProxyDraft, setCustomProxyDraft] = useState(settings.githubProxyCustomUrl || "");
+  const [savingProxy, setSavingProxy] = useState(false);
   const [busyId, setBusyId] = useState("");
 
   const plugins = sources.filter((s) => !s.builtin);
@@ -167,6 +170,36 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
       e.target.value = "";
     }
   };
+
+  useEffect(() => {
+    setCustomProxyDraft(settings.githubProxyCustomUrl || "");
+  }, [settings.githubProxyCustomUrl]);
+
+  const handleSaveCustomProxy = async () => {
+    const trimmed = customProxyDraft.trim();
+    setSavingProxy(true);
+    try {
+      await onUpdateSettings({
+        githubProxyMode: "custom",
+        githubProxyCustomUrl: trimmed,
+      });
+      onToast("已保存设置");
+    } catch (e) {
+      onToast(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSavingProxy(false);
+    }
+  };
+
+  const proxyOptions: { id: GitHubProxyMode; title: string; sub: string }[] = [
+    { id: "gh-proxy.com", title: "gh-proxy.com", sub: "https://gh-proxy.com" },
+    { id: "gh-proxy.org", title: "gh-proxy.org", sub: "https://gh-proxy.org" },
+    {
+      id: "custom",
+      title: t("Custom Proxy"),
+      sub: (settings.githubProxyCustomUrl || "").trim() || t("Custom Proxy Sub"),
+    },
+  ];
 
   const channels = updateStatus?.channels || [
     { id: "fork" as UpdateChannel, repo: "yegetables/mygo-music", supported: true },
@@ -368,6 +401,98 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
             {t("Clear Cache")}
           </button>
         </div>
+      </div>
+
+      {/* 4.5 Network / GitHub Proxy */}
+      <div className="settings-group">
+        <h3>{t("Network")}</h3>
+
+        <div className="setting-row">
+          <div className="setting-meta">
+            <div className="setting-label">{t("GitHub Proxy")}</div>
+            <div className="setting-desc">{t("GitHub Proxy Help")}</div>
+          </div>
+          <Switch
+            checked={!!settings.githubProxyEnabled}
+            onChange={(v) =>
+              onUpdateSettings({
+                githubProxyEnabled: v,
+                githubProxyMode: settings.githubProxyMode || "gh-proxy.com",
+              }).catch((e) => onToast(e instanceof Error ? e.message : String(e)))
+            }
+          />
+        </div>
+
+        {settings.githubProxyEnabled && (
+          <>
+            <div className="setting-row setting-row-stack">
+              <div className="setting-meta">
+                <div className="setting-label">{t("Proxy Service")}</div>
+              </div>
+              <div className="proxy-picker" role="radiogroup" aria-label={t("Proxy Service")}>
+                {proxyOptions.map((opt) => {
+                  const selected = (settings.githubProxyMode || "gh-proxy.com") === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={selected}
+                      className={`channel-option ${selected ? "selected" : ""}`}
+                      onClick={() => {
+                        if (!selected) {
+                          onUpdateSettings({ githubProxyMode: opt.id }).catch((e) =>
+                            onToast(e instanceof Error ? e.message : String(e))
+                          );
+                        }
+                      }}
+                    >
+                      <div className="channel-title">
+                        {opt.title}
+                        {selected && <span className="badge" style={{ marginLeft: 6 }}>✓</span>}
+                      </div>
+                      <div className="channel-sub" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {opt.sub}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {settings.githubProxyMode === "custom" && (
+              <div className="setting-row setting-row-stack" style={{ gap: 8 }}>
+                <div className="setting-meta">
+                  <div className="setting-label">{t("Custom Proxy URL")}</div>
+                  <div className="setting-desc">{t("Custom Proxy Help")}</div>
+                </div>
+                <div className="proxy-custom-row">
+                  <input
+                    className="form-input"
+                    type="url"
+                    inputMode="url"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    placeholder="https://your-proxy.example.com"
+                    value={customProxyDraft}
+                    onChange={(e) => setCustomProxyDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleSaveCustomProxy();
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    disabled={savingProxy}
+                    onClick={handleSaveCustomProxy}
+                  >
+                    {t("Save Setting")}
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
+        )}
       </div>
 
       {/* 5. Updates (Fork default + Official channel greyed out on unsupported mobile platforms) */}

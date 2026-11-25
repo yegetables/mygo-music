@@ -1,4 +1,16 @@
-# MyGo Music
+# MyGo Music (Mobile Fork)
+
+> 本仓库是 [egoist/mygo-music](https://github.com/egoist/mygo-music) 的个人维护 Fork，保留上游桌面端全部能力，专注于 **iPadOS 17+ / iOS 17+** 与 **Android 12+** 移动端的完整移植与日常体验增强。
+>
+> **Fork 目标**
+> - **跨端复用 Go 核心与插件生态**：在移动端直接运行共享 Go 核心与 JS/TS 插件运行时，兼容上游桌面端插件（本地 `.zip`、URL 直链、GitHub 仓库及代理链接安装与扫码登录）。
+> - **完整的移动播放与视觉体验**：适配 iPad 侧栏与手机端紧凑单栏布局、安全区与横竖屏切换，移植 Stage 动态歌词、WebGL 烟雾氛围、复古黑胶/磁带样式、后台播放与锁屏媒体控制。
+> - **开箱可用的移动端分发与网络适配**：提供免付费开发者受限权限的自签 IPA 与 arm64 APK（见 [Releases](https://github.com/yegetables/mygo-music/releases)），内置 Fork 更新检测与可选的 GitHub 代理（支持 `gh-proxy.com`、`gh-proxy.org` 及自定义代理并自动回退直连）。
+> - 移动端架构、构建方式与安装说明见 [`mobile/README.md`](mobile/README.md)。
+
+---
+
+### Upstream Introduction
 
 A native desktop music player written in Go with [MyGo](https://github.com/egoist/mygo), no WebView. It plays your local files out of the box, and everything else comes from plugins.
 

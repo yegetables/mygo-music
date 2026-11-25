@@ -77,9 +77,10 @@ type sourceManager struct {
 	plugins       map[string]*plugin.Plugin
 	pending       map[string]*pendingEntry
 	emit          func(event string, payload any)
+	githubProxy   func() string
 }
 
-func newSourceManager(dataDir string, emit func(string, any)) *sourceManager {
+func newSourceManager(dataDir string, emit func(string, any), githubProxy func() string) *sourceManager {
 	pluginsDir := filepath.Join(dataDir, "plugins")
 	pluginDataDir := filepath.Join(dataDir, "plugin-data")
 	localDir := filepath.Join(dataDir, "local")
@@ -105,6 +106,7 @@ func newSourceManager(dataDir string, emit func(string, any)) *sourceManager {
 		plugins:       map[string]*plugin.Plugin{},
 		pending:       map[string]*pendingEntry{},
 		emit:          emit,
+		githubProxy:   githubProxy,
 	}
 
 	sm.discover()
@@ -277,12 +279,26 @@ func (sm *sourceManager) registerPending(p *plugin.Pending) PendingSummary {
 	}
 }
 
+func (sm *sourceManager) activeGitHubProxy() string {
+	if sm.githubProxy == nil {
+		return ""
+	}
+	return strings.TrimSpace(sm.githubProxy())
+}
+
 func (sm *sourceManager) PrepareGitHub(repoInput string) (*PendingSummary, error) {
-	repo, err := plugin.ParseRepo(repoInput)
+	repo, inputProxy, err := plugin.ParseRepoWithProxy(repoInput)
 	if err != nil {
 		return nil, err
 	}
-	pending, err := plugin.Fetch(repo, sm.pluginsDir)
+	var proxies []string
+	if inputProxy != "" {
+		proxies = append(proxies, inputProxy)
+	}
+	if globalProxy := sm.activeGitHubProxy(); globalProxy != "" && globalProxy != inputProxy {
+		proxies = append(proxies, globalProxy)
+	}
+	pending, err := plugin.FetchWithProxies(repo, sm.pluginsDir, proxies...)
 	if err != nil {
 		return nil, err
 	}
@@ -318,25 +334,70 @@ func (sm *sourceManager) PrepareZipReader(r io.Reader) (*PendingSummary, error) 
 }
 
 func (sm *sourceManager) PrepareURL(rawURL string) (*PendingSummary, error) {
-	u, err := url.Parse(strings.TrimSpace(rawURL))
+	trimmed := strings.TrimSpace(rawURL)
+	u, err := url.Parse(trimmed)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return nil, fmt.Errorf("invalid plugin archive URL: %s", rawURL)
 	}
+
+	var candidates []string
+	if _, directTarget, isProxied := plugin.SplitProxyURL(trimmed); isProxied {
+		// User explicitly supplied a proxy-wrapped GitHub URL: try it first, then
+		// fall back to direct GitHub even when global proxy is disabled.
+		candidates = []string{trimmed, directTarget}
+	} else if globalProxy := sm.activeGitHubProxy(); globalProxy != "" && plugin.IsGitHubURL(trimmed) {
+		candidates = plugin.ProxyCandidates(trimmed, globalProxy)
+	} else {
+		candidates = []string{trimmed}
+	}
+
 	client := &http.Client{Timeout: 2 * time.Minute}
-	req, err := http.NewRequest("GET", u.String(), nil)
-	if err != nil {
-		return nil, err
+	var lastErr error
+	for idx, target := range candidates {
+		isLast := idx == len(candidates)-1
+		req, err := http.NewRequest("GET", target, nil)
+		if err != nil {
+			lastErr = err
+			if !isLast {
+				continue
+			}
+			return nil, err
+		}
+		req.Header.Set("User-Agent", music.Agent)
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			if !isLast {
+				continue
+			}
+			return nil, err
+		}
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("download failed: %s", resp.Status)
+			resp.Body.Close()
+			if !isLast {
+				continue
+			}
+			return nil, lastErr
+		}
+		ct := strings.ToLower(resp.Header.Get("Content-Type"))
+		if !isLast && strings.Contains(ct, "text/html") {
+			lastErr = errors.New("download failed: unexpected HTML response from proxy")
+			resp.Body.Close()
+			continue
+		}
+		summary, prepErr := sm.PrepareZipReader(resp.Body)
+		resp.Body.Close()
+		if prepErr != nil {
+			lastErr = prepErr
+			if !isLast {
+				continue
+			}
+			return nil, prepErr
+		}
+		return summary, nil
 	}
-	req.Header.Set("User-Agent", music.Agent)
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("download failed: %s", resp.Status)
-	}
-	return sm.PrepareZipReader(resp.Body)
+	return nil, lastErr
 }
 
 func (sm *sourceManager) ConfirmInstall(pendingID string) (*SourceSummary, error) {
@@ -442,7 +503,7 @@ func (sm *sourceManager) CheckUpdate(id string) (map[string]any, error) {
 	if origin == nil || origin.Repo == "" {
 		return map[string]any{"hasUpdate": false, "localOnly": true}, nil
 	}
-	latest, err := plugin.Latest(origin.Repo)
+	latest, err := plugin.LatestWithProxies(origin.Repo, sm.activeGitHubProxy())
 	if err != nil {
 		return nil, err
 	}

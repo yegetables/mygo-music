@@ -23,8 +23,9 @@ if [ -z "$NDK_DIR" ]; then
 fi
 
 eval "$(bash "$ROOT_DIR/mobile/scripts/version.sh" --bump)"
+BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-echo "==> Version: v${APP_VERSION} (versionCode=${VERSION_CODE})"
+echo "==> Version: v${APP_VERSION} (versionCode=${VERSION_CODE}, buildTime=${BUILD_TIME})"
 echo "==> 1/3 Building mobile/web UI"
 (cd "$WEB_DIR" && bun install --frozen-lockfile 2>/dev/null || bun install)
 (cd "$WEB_DIR" && bun run build)
@@ -34,7 +35,7 @@ OUT_DIR="$ANDROID_DIR/app/src/main/jniLibs/arm64-v8a"
 mkdir -p "$OUT_DIR"
 CC="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android31-clang" \
 CGO_ENABLED=1 GOOS=android GOARCH=arm64 \
-go build -C "$ROOT_DIR" -buildmode=c-shared -ldflags="-s -w -X mygo-music/internal/mobilecore.AppVersion=${APP_VERSION}" \
+go build -C "$ROOT_DIR" -buildmode=c-shared -ldflags="-s -w -X mygo-music/internal/mobilecore.AppVersion=${APP_VERSION} -X mygo-music/internal/mobilecore.AppBuildTime=${BUILD_TIME}" \
   -o "$OUT_DIR/libmygocore.so" ./mobile/bridge
 # Remove generated header from jniLibs so APK packaging stays clean
 if [ -f "$OUT_DIR/libmygocore.h" ]; then

@@ -23,6 +23,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({ release, progress, onC
     if (IS_NATIVE && release.canDirectInstall) {
       postNative("downloadAndInstallUpdate", {
         url: downloadUrl,
+        fallbackUrl: release.fallbackDownloadUrl || "",
         version: release.latestVersion,
       });
       return;
